@@ -1,0 +1,78 @@
+//@version=6
+indicator("Paperdesk Signal Bridge · Template", overlay=true)
+
+// This is a safe starter template, not a trading recommendation. Signals are
+// disabled by default. Replace the example MA-cross conditions with your own.
+secretInput = input.string("", "Webhook secret")
+strategyId = input.string("MY_STRATEGY", "Strategy identifier (letters, numbers, _ or -)")
+enableExampleSignals = input.bool(false, "Enable example MA-cross signals")
+quantity = input.float(1, "Paper quantity", minval=0.0001, step=1)
+stopDistance = input.float(0, "Stop distance in price units (0 disables)", minval=0)
+targetDistance = input.float(0, "Target distance in price units (0 disables)", minval=0)
+fastLength = input.int(9, "Example fast SMA", minval=1)
+slowLength = input.int(21, "Example slow SMA", minval=2)
+
+f_number(float value) =>
+    str.tostring(value, format.mintick)
+
+f_id(string eventName, string tradeId) =>
+    strategyId + "-" + str.replace_all(syminfo.tickerid, ":", "_") + "-" + timeframe.period + "-" + str.tostring(time_close) + "-" + eventName + "-" + tradeId
+
+f_base(string eventName, string tradeId) =>
+    "{\"event\":\"" + eventName + "\",\"event_id\":\"" + f_id(eventName, tradeId) + "\",\"trade_id\":\"" + tradeId + "\",\"secret\":\"" + secretInput + "\",\"strategy\":\"" + strategyId + "\",\"symbol\":\"" + syminfo.tickerid + "\",\"timeframe\":\"" + timeframe.period + "\",\"timestamp\":\"" + str.tostring(time_close) + "\",\"source\":\"TRADINGVIEW\""
+
+f_entry(string eventName, string tradeId, float entryPrice, float stopPrice, float targetPrice) =>
+    f_base(eventName, tradeId) + ",\"price\":" + f_number(entryPrice) + ",\"entry_price\":" + f_number(entryPrice) + ",\"quantity\":" + str.tostring(quantity) + ",\"stop_loss\":" + (stopDistance > 0 and stopPrice > 0 ? f_number(stopPrice) : "null") + ",\"target\":" + (targetDistance > 0 and targetPrice > 0 ? f_number(targetPrice) : "null") + "}"
+
+f_exit(string eventName, string tradeId, float exitPrice, float exitQuantity) =>
+    f_base(eventName, tradeId) + ",\"price\":" + f_number(exitPrice) + ",\"exit_price\":" + f_number(exitPrice) + ",\"exit_quantity\":" + str.tostring(exitQuantity) + "}"
+
+f_modify(string eventName, string tradeId, float newPrice) =>
+    f_base(eventName, tradeId) + ",\"price\":" + f_number(newPrice) + "}"
+
+fast = ta.sma(close, fastLength)
+slow = ta.sma(close, slowLength)
+hasWebhookSecret = str.length(secretInput) >= 24
+longSignal = hasWebhookSecret and enableExampleSignals and barstate.isconfirmed and ta.crossover(fast, slow)
+shortSignal = hasWebhookSecret and enableExampleSignals and barstate.isconfirmed and ta.crossunder(fast, slow)
+
+// The template tracks a single simulated position so every exit is linked to
+// the exact trade_id created by its entry alert.
+var int openSide = 0
+var string openTradeId = ""
+var float openPrice = na
+
+if longSignal and openSide != 1
+    if openSide == -1
+        alert(f_exit("EXIT_SHORT", openTradeId, close, quantity), alert.freq_all)
+    openTradeId := strategyId + "-" + str.replace_all(syminfo.tickerid, ":", "_") + "-" + str.tostring(time_close)
+    openPrice := close
+    openSide := 1
+    float sl = stopDistance > 0 ? openPrice - stopDistance : na
+    float tp = targetDistance > 0 ? openPrice + targetDistance : na
+    alert(f_entry("ENTRY_LONG", openTradeId, openPrice, sl, tp), alert.freq_all)
+else if shortSignal and openSide != -1
+    if openSide == 1
+        alert(f_exit("EXIT_LONG", openTradeId, close, quantity), alert.freq_all)
+    openTradeId := strategyId + "-" + str.replace_all(syminfo.tickerid, ":", "_") + "-" + str.tostring(time_close)
+    openPrice := close
+    openSide := -1
+    float sl = stopDistance > 0 ? openPrice + stopDistance : na
+    float tp = targetDistance > 0 ? openPrice - targetDistance : na
+    alert(f_entry("ENTRY_SHORT", openTradeId, openPrice, sl, tp), alert.freq_all)
+
+// When stop/target values are supplied, keep the dedicated PRICE_UPDATE alert
+// active for this symbol. It is the backend price monitor that closes those
+// positions; the template only clears its local state once a confirmed close
+// is at/beyond the configured level, so it does not send a competing exit.
+longStopHit = openSide == 1 and stopDistance > 0 and close <= openPrice - stopDistance
+longTargetHit = openSide == 1 and targetDistance > 0 and close >= openPrice + targetDistance
+shortStopHit = openSide == -1 and stopDistance > 0 and close >= openPrice + stopDistance
+shortTargetHit = openSide == -1 and targetDistance > 0 and close <= openPrice - targetDistance
+if barstate.isconfirmed and (longStopHit or longTargetHit or shortStopHit or shortTargetHit)
+    openSide := 0
+    openTradeId := ""
+    openPrice := na
+
+plot(fast, "Example fast SMA", color=color.aqua)
+plot(slow, "Example slow SMA", color=color.orange)

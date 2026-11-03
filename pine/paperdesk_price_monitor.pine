@@ -1,0 +1,27 @@
+//@version=6
+indicator("Paperdesk Market Price Monitor", overlay=true)
+
+// One alert instance per chart symbol. On a 1-minute chart this can emit no
+// more than one update per minute, only on confirmed bars with available data.
+secretInput = input.string("", "Webhook secret")
+strategyId = input.string("MARKET_PRICE_MONITOR", "Strategy identifier")
+intervalMinutes = input.int(1, "Update every N minutes", minval=1, maxval=60)
+
+isOneMinute = timeframe.isminutes and timeframe.multiplier == 1
+hasWebhookSecret = str.length(secretInput) >= 24
+var int lastSentTime = na
+var table statusTable = table.new(position.top_right, 1, 1)
+
+if barstate.islast
+    string statusText = not isOneMinute ? "Paperdesk: set chart to 1 minute" : not hasWebhookSecret ? "Paperdesk: set webhook secret" : "Paperdesk price feed · 1m"
+    color statusColor = isOneMinute and hasWebhookSecret ? color.new(color.green, 55) : color.new(color.red, 35)
+    table.cell(statusTable, 0, 0, statusText, text_color=color.white, bgcolor=statusColor)
+
+shouldSend = isOneMinute and hasWebhookSecret and barstate.isconfirmed and (na(lastSentTime) or time - lastSentTime >= intervalMinutes * 60 * 1000)
+if shouldSend
+    lastSentTime := time
+    string eventId = "price-" + str.replace_all(syminfo.tickerid, ":", "_") + "-" + str.tostring(time_close)
+    string payload = "{\"event\":\"PRICE_UPDATE\",\"event_id\":\"" + eventId + "\",\"secret\":\"" + secretInput + "\",\"strategy\":\"" + strategyId + "\",\"symbol\":\"" + syminfo.tickerid + "\",\"price\":" + str.tostring(close, format.mintick) + ",\"timestamp\":\"" + str.tostring(time_close) + "\",\"timeframe\":\"" + timeframe.period + "\",\"source\":\"TRADINGVIEW\"}"
+    alert(payload, alert.freq_once_per_bar_close)
+
+plot(close, "Alerted close", color=color.new(color.teal, 100), display=display.none)

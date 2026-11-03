@@ -1,0 +1,12 @@
+.env
+.git
+.pytest_cache
+__pycache__
+*.pyc
+*.db
+frontend/node_modules
+frontend/dist
+backend/.pytest_cache
+backend/__pycache__
+certbot
+node_modules

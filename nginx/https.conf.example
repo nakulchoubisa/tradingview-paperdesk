@@ -1,0 +1,7 @@
+server { listen 80; server_name YOUR_DOMAIN; location /.well-known/acme-challenge/ { root /var/www/certbot; } location / { return 301 https://$host$request_uri; } }
+server { listen 443 ssl; server_name YOUR_DOMAIN; ssl_certificate /etc/letsencrypt/live/YOUR_DOMAIN/fullchain.pem; ssl_certificate_key /etc/letsencrypt/live/YOUR_DOMAIN/privkey.pem; ssl_protocols TLSv1.2 TLSv1.3;
+ location = /api/webhook/tradingview { allow 52.89.214.238; allow 34.212.75.30; allow 54.218.53.128; allow 52.32.178.7; deny all; proxy_pass http://api:8000/api/webhook/tradingview; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_set_header X-Forwarded-Proto https; proxy_http_version 1.1; }
+ location /api/ { proxy_pass http://api:8000/api/; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_set_header X-Forwarded-Proto https; proxy_http_version 1.1; proxy_buffering off; proxy_read_timeout 3600s; }
+ location /health { proxy_pass http://api:8000/health; }
+ location / { proxy_pass http://web:80; }
+}

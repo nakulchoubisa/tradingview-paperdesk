@@ -1,0 +1,1023 @@
+//@version=6
+indicator("ZERO POINT AUTOMATION", overlay=true, max_labels_count=500, max_boxes_count=500, max_bars_back=1000)
+
+// ============================================================================
+// --- INPUTS & CONFIGURATION ---
+// ============================================================================
+
+groupInfo        = "Info & Disclaimer"
+_disclaimerText  = "Trading financial markets involves substantial risk of loss and is not suitable for every investor. The signals, indicators, and content provided by this script are purely for educational purposes and do not constitute financial or investment advice."
+_disclaimer      = input.text_area(_disclaimerText, "Disclaimer Notice", group=groupInfo)
+_tfRec           = input.string("3 / 5 / 15 Minutes", "Scalping Timeframe", group=groupInfo, tooltip="Best suited for 3-minute, 5-minute, or 15-minute timeframes.")
+
+groupVis         = "Visuals & UI"
+dashPosInput     = input.string("Top Right", "Dashboard Position", options=["Top Left", "Top Right", "Middle Left", "Middle Right", "Bottom Left", "Bottom Right"], group=groupVis)
+dashTextSize     = input.string("normal", "Dashboard Font Size", options=["tiny", "small", "normal", "large", "huge"], group=groupVis)
+tradeTextSize    = input.string("normal", "Trade Label Size", options=["tiny", "small", "normal", "large", "huge"], group=groupVis)
+ribbonOpacity    = input.int(50, "EMA Ribbon Opacity", minval=0, maxval=100, group=groupVis)
+labelOffsetBars  = input.int(10, "Label Right Offset (Bars)", minval=2, maxval=100, group=groupVis, tooltip="Determines how far to the right of live candles the price tags project.")
+
+showQtyLabel     = input.bool(true, "Show QTY Label between C ENTRY & SL", group=groupVis)
+qtyLabelOffsetBars = input.int(0, "QTY Label Extra Right Offset (Bars)", minval=0, maxval=100, group=groupVis, tooltip="0 = same x as C ENTRY / SL labels. Increase if QTY label overlaps them.")
+qtyLabelSize     = input.string("small", "QTY Label Size", options=["tiny", "small", "normal", "large", "huge"], group=groupVis)
+
+sectorInput = input.string(
+     "BANKING",
+     "Sector",
+     options = [
+         "BANKING",
+         "IT",
+         "AUTO",
+         "PHARMA",
+         "FMCG",
+         "METAL",
+         "REALTY",
+         "OIL & GAS",
+         "POWER",
+         "FINANCIAL SERVICES",
+         "MY WATCHLIST"
+     ],
+     group = "Sector Dashboard")
+
+sectorDashPosInput = input.string(
+  "Bottom Right",
+  "Sector Dashboard Position",
+  options = [
+    "Top Left",
+    "Top Right",
+    "Middle Left",
+    "Middle Right",
+    "Bottom Left",
+    "Bottom Right"
+  ],
+  group = "Sector Dashboard"
+)
+
+sectorDashTextSize = input.string(
+  "tiny",
+  "Sector Dashboard Font Size",
+  options = ["tiny", "small", "normal", "large", "huge"],
+  group = "Sector Dashboard"
+)
+
+groupFearGreed = "Fear & Greed"
+
+showFearGreed = input.bool(
+    true,
+    "Show Fear & Greed",
+    group = groupFearGreed)
+
+groupZeroPoint = "Zero Point Unique Targets"
+
+showZeroPointTargets = input.bool(
+    true,
+    "Show Zero Point Unique Targets",
+    group = groupZeroPoint)
+
+zpLabelOffsetBars = input.int(20, "Zero Point Label Offset (Bars)", minval=2, maxval=300, group=groupZeroPoint, tooltip="Push Zero Point target labels further right so they don't clash with TP1-5 labels.")
+
+// ===== ZERO POINT TARGET MAPPING =====
+
+float zpMinPct = 0.0
+float zpMaxPct = 0.0
+
+if timeframe.isminutes
+    if timeframe.multiplier == 60
+        zpMinPct := 15.0
+        zpMaxPct := 20.0
+    else if timeframe.multiplier == 1
+        zpMinPct := 1.0
+        zpMaxPct := 3.0
+    else if timeframe.multiplier == 3
+        zpMinPct := 3.0
+        zpMaxPct := 3.0
+    else if timeframe.multiplier == 5
+        zpMinPct := 3.0
+        zpMaxPct := 5.0
+    else if timeframe.multiplier == 15
+        zpMinPct := 3.0
+        zpMaxPct := 5.0
+
+else if timeframe.isdaily
+    zpMinPct := 70.0
+    zpMaxPct := 100.0
+
+else if timeframe.isweekly
+    zpMinPct := 200.0
+    zpMaxPct := 300.0
+
+else if timeframe.ismonthly
+    zpMinPct := 800.0
+    zpMaxPct := 1000.0
+
+groupPaper       = "Paper Trade"
+atrMultiplier    = input.float(2.0, "SL ATR Multiplier", minval=0.1, step=0.1, group=groupPaper)
+paperQuantity    = input.float(0.001, "Paper quantity (chart units)", minval=0.00000001, step=0.001, group=groupPaper, tooltip="Fixed simulated size for each entry. No capital or risk-based sizing is applied.")
+
+// SECTOR STOCK LIST
+
+string[] sectorStocks = array.new_string()
+
+if sectorInput == "BANKING"
+    sectorStocks := array.from(
+         "HDFCBANK",
+         "ICICIBANK",
+         "SBIN",
+         "AXISBANK",
+         "KOTAKBANK",
+         "INDUSINDBK",
+         "BANKBARODA",
+         "PNB")
+
+else if sectorInput == "IT"
+    sectorStocks := array.from(
+         "TCS",
+         "INFY",
+         "HCLTECH",
+         "WIPRO",
+         "TECHM",
+         "LTIM",
+         "COFORGE",
+         "PERSISTENT")
+
+else if sectorInput == "AUTO"
+    sectorStocks := array.from(
+         "M&M",
+         "MARUTI",
+         "TATAMOTORS",
+         "EICHERMOT",
+         "HEROMOTOCO",
+         "TVSMOTOR",
+         "ASHOKLEY")
+
+else if sectorInput == "PHARMA"
+    sectorStocks := array.from(
+         "SUNPHARMA",
+         "DRREDDY",
+         "CIPLA",
+         "DIVISLAB",
+         "APOLLOHOSP",
+         "LUPIN",
+         "AUROPHARMA",
+         "TORNTPHARM")
+
+else if sectorInput == "FMCG"
+    sectorStocks := array.from(
+         "ITC",
+         "HINDUNILVR",
+         "NESTLEIND",
+         "BRITANNIA",
+         "TATACONSUM",
+         "DABUR",
+         "MARICO",
+         "COLPAL")
+
+else if sectorInput == "METAL"
+    sectorStocks := array.from(
+         "TATASTEEL",
+         "HINDALCO",
+         "JSWSTEEL",
+         "VEDL",
+         "JINDALSTEL",
+         "NMDC",
+         "SAIL",
+         "NATIONALUM")
+
+else if sectorInput == "REALTY"
+    sectorStocks := array.from(
+         "DLF",
+         "LODHA",
+         "GODREJPROP",
+         "OBEROIRLTY",
+         "PRESTIGE",
+         "SOBHA",
+         "PHOENIXLTD",
+         "BRIGADE")
+
+else if sectorInput == "OIL & GAS"
+    sectorStocks := array.from(
+         "RELIANCE",
+         "ONGC",
+         "IOC",
+         "BPCL",
+         "HINDPETRO",
+         "GAIL",
+         "OIL",
+         "PETRONET")
+
+else if sectorInput == "POWER"
+    sectorStocks := array.from(
+         "NTPC",
+         "POWERGRID",
+         "TATAPOWER",
+         "ADANIPOWER",
+         "TORNTPOWER",
+         "JSWENERGY",
+         "NHPC",
+         "SJVN")
+
+else if sectorInput == "FINANCIAL SERVICES"
+    sectorStocks := array.from(
+         "BAJFINANCE",
+         "BAJAJFINSV",
+         "SHRIRAMFIN",
+         "CHOLAFIN",
+         "MUTHOOTFIN",
+         "PFC",
+         "RECLTD",
+         "LICHSGFIN")
+
+else if sectorInput == "MY WATCHLIST"
+    sectorStocks := array.from(
+         "DMART",
+         "BSE",
+         "DIXON",
+         "MARUTI",
+         "MCX",
+         "M&M",
+         "EICHERMOT",
+         "HAL",
+         "HINDALCO",
+         "TCS",
+         "LT",
+         "ADANIENT",
+         "ABB",
+         "NATIONALUM",
+         "BEL")
+
+// ============================================================================
+// --- HELPER FUNCTIONS & COLOR DEFINITIONS ---
+// ============================================================================
+
+color c_turquoise = #40E0D0
+
+f_getDashPos(string _pos) =>
+    switch _pos
+        "Top Left"     => position.top_left
+        "Top Right"    => position.top_right
+        "Middle Left"  => position.middle_left
+        "Middle Right" => position.middle_right
+        "Bottom Left"  => position.bottom_left
+        "Bottom Right" => position.bottom_right
+        => position.top_right
+
+f_addDashRow(table _table, int _row, string _title, string _val, color _col, string _size) =>
+    table.cell(_table, 0, _row, _title, text_color=color.black, text_halign=text.align_left, text_size=_size)
+    table.cell(_table, 1, _row, _val, text_color=_col, text_size=_size, text_halign=text.align_right)
+
+// ============================================================================
+// --- SECTOR GRID DASHBOARD (Stock name on top row, % change below it) ---
+// ============================================================================
+
+var table sectorDash = table.new(
+     f_getDashPos(sectorDashPosInput),
+     array.size(sectorStocks) + 1,
+     2,
+     bgcolor = color.new(color.black, 5),
+     border_width = 1)
+
+if barstate.islast
+
+    table.cell(
+         sectorDash,
+         0,
+         0,
+         "SECTOR",
+         text_color = color.white,
+         bgcolor = color.black,
+         text_size = sectorDashTextSize)
+
+    table.cell(
+         sectorDash,
+         0,
+         1,
+         sectorInput,
+         text_color = color.yellow,
+         bgcolor = color.black,
+         text_size = sectorDashTextSize)
+
+    for i = 0 to array.size(sectorStocks) - 1
+        string sym = array.get(sectorStocks, i)
+
+        float currentPrice = request.security("NSE:" + sym, "D", close)
+        float previousPrice = request.security("NSE:" + sym, "D", close[1])
+
+        string pctText = "â€”"
+        color pctColor = color.gray
+
+        if not na(currentPrice) and not na(previousPrice)
+            float pctChange = ((currentPrice - previousPrice) / previousPrice) * 100.0
+            pctText := (pctChange >= 0 ? "+" : "") + str.tostring(pctChange, "#.##") + "%"
+            pctColor := pctChange > 0 ? color.green : pctChange < 0 ? color.red : color.gray
+
+        table.cell(
+             sectorDash,
+             i + 1,
+             0,
+             sym,
+             text_color = color.white,
+             bgcolor = color.black,
+             text_size = sectorDashTextSize)
+
+        table.cell(
+             sectorDash,
+             i + 1,
+             1,
+             pctText,
+             text_color = pctColor,
+             bgcolor = color.black,
+             text_size = sectorDashTextSize)
+
+// ============================================================================
+// --- INDICATORS & ANALYSIS LOGIC ---
+// ============================================================================
+
+ema9    = ta.ema(close, 9)
+ema21   = ta.ema(close, 21)
+ema200   = ta.ema(close, 200)
+vwapV   = ta.vwap(hlc3)
+atr     = ta.atr(14)
+var float qty = 0.0
+var float tp2Qty = 0.0
+var float tp3Qty = 0.0
+var float tp5Qty = 0.0
+var float tp2Profit = 0.0
+var float tp3Profit = 0.0
+var float tp5Profit = 0.0
+var string itmOption = "â€”"
+strikeStep = input.float(50.0, "Strike Interval", minval=0.05)
+rsiVal  = ta.rsi(close, 14)
+rsi5m   = request.security(syminfo.tickerid, "5", ta.rsi(close[1], 14), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+[m, s, macdHist] = ta.macd(close, 12, 26, 9)
+[plusDI, minusDI, adx] = ta.dmi(14, 14)
+volAvg  = ta.sma(volume, 20)
+
+// ===== ZERO POINT DETECTION =====
+
+// Bullish Zero Point:
+// Price is above 9 EMA, 21 EMA and 200 EMA
+bool zpBullState = close > ema9 and close > ema21 and close > ema200
+
+// Bearish Zero Point:
+// Price is below 9 EMA, 21 EMA and 200 EMA
+bool zpBearState = close < ema9 and close < ema21 and close < ema200
+
+// Zero Point is triggered when price enters the Zero Point zone
+bool zeroPointBull = zpBullState and not zpBullState[1]
+bool zeroPointBear = zpBearState and not zpBearState[1]
+
+bool zeroPointSignal = zeroPointBull or zeroPointBear
+
+plotshape(
+     zeroPointSignal,
+     title = "ZERO POINT TEST",
+     style = shape.triangleup,
+     location = location.belowbar,
+     color = color.blue,
+     size = size.small,
+     text = "ZP")
+
+// ===== ZERO POINT UNIQUE TARGET CALCULATION =====
+
+var float zpEntryPrice = na
+var float zpTargetMin = na
+var float zpTargetMax = na
+var bool zpBullActive = false
+
+// Lock Zero Point only when a new Zero Point appears
+if zeroPointSignal
+    zpEntryPrice := close
+    zpBullActive := zeroPointBull
+
+    // Bullish Zero Point
+    if zpBullActive
+        zpTargetMin := zpEntryPrice * (1.0 + zpMinPct / 100.0)
+        zpTargetMax := zpEntryPrice * (1.0 + zpMaxPct / 100.0)
+
+    // Bearish Zero Point
+    else
+        zpTargetMin := zpEntryPrice * (1.0 - zpMinPct / 100.0)
+        zpTargetMax := zpEntryPrice * (1.0 - zpMaxPct / 100.0)
+
+// ===== ZERO POINT UNIQUE TARGET PLOTS =====
+// Current + Previous 2 Zero Points (3 sets total)
+
+var line[]  zpMinLines  = array.new_line()
+var line[]  zpMaxLines  = array.new_line()
+var label[] zpMinLabels = array.new_label()
+var label[] zpMaxLabels = array.new_label()
+
+int maxSets = 3   // 1 current + 2 previous
+
+if zeroPointSignal and showZeroPointTargets and not na(zpTargetMin) and not na(zpTargetMax)
+
+    // ==========================================
+    // AGE EXISTING SETS (make them look "previous")
+    // ==========================================
+    if array.size(zpMinLines) > 0
+        for i = 0 to array.size(zpMinLines) - 1
+            line.set_style(array.get(zpMinLines, i), line.style_dashed)
+            line.set_color(array.get(zpMinLines, i), color.new(color.orange, 60))
+            line.set_width(array.get(zpMinLines, i), 1)
+
+            line.set_style(array.get(zpMaxLines, i), line.style_dashed)
+            line.set_color(array.get(zpMaxLines, i), color.new(color.yellow, 60))
+            line.set_width(array.get(zpMaxLines, i), 1)
+
+            label.set_color(array.get(zpMinLabels, i), color.new(color.orange, 60))
+            label.set_textcolor(array.get(zpMinLabels, i), color.new(color.black, 30))
+
+            label.set_color(array.get(zpMaxLabels, i), color.new(color.yellow, 60))
+            label.set_textcolor(array.get(zpMaxLabels, i), color.new(color.black, 30))
+
+            int agoNum = array.size(zpMinLines) - i
+            label.set_text(array.get(zpMinLabels, i), "PREV TARGET 1 (-" + str.tostring(agoNum) + ")  " + str.tostring(line.get_price(array.get(zpMinLines, i), bar_index), "#.##"))
+            label.set_text(array.get(zpMaxLabels, i), "PREV TARGET 2 (-" + str.tostring(agoNum) + ")  " + str.tostring(line.get_price(array.get(zpMaxLines, i), bar_index), "#.##"))
+
+    // ==========================================
+    // DROP OLDEST SET IF WE'D EXCEED maxSets
+    // ==========================================
+    if array.size(zpMinLines) >= maxSets
+        line.delete(array.shift(zpMinLines))
+        line.delete(array.shift(zpMaxLines))
+        label.delete(array.shift(zpMinLabels))
+        label.delete(array.shift(zpMaxLabels))
+
+    // ==========================================
+    // CREATE NEW CURRENT TARGET 1
+    // ==========================================
+    line newMinLine = line.new(
+         x1 = bar_index,
+         y1 = zpTargetMin,
+         x2 = bar_index + 1,
+         y2 = zpTargetMin,
+         extend = extend.right,
+         color = color.orange,
+         width = 2)
+
+    label newMinLabel = label.new(
+         x = bar_index,
+         y = zpTargetMin,
+         text = "UNIQUE TARGET 1  " + str.tostring(zpTargetMin, "#.##"),
+         style = label.style_label_left,
+         textcolor = color.black,
+         color = color.orange)
+
+    // ==========================================
+    // CREATE NEW CURRENT TARGET 2
+    // ==========================================
+    line newMaxLine = line.new(
+         x1 = bar_index,
+         y1 = zpTargetMax,
+         x2 = bar_index + 1,
+         y2 = zpTargetMax,
+         extend = extend.right,
+         color = color.yellow,
+         width = 2)
+
+    label newMaxLabel = label.new(
+         x = bar_index,
+         y = zpTargetMax,
+         text = "UNIQUE TARGET 2  " + str.tostring(zpTargetMax, "#.##"),
+         style = label.style_label_left,
+         textcolor = color.black,
+         color = color.yellow)
+
+    array.push(zpMinLines, newMinLine)
+    array.push(zpMaxLines, newMaxLine)
+    array.push(zpMinLabels, newMinLabel)
+    array.push(zpMaxLabels, newMaxLabel)
+
+// ===== KEEP ZERO POINT LABELS OFFSET TO THE RIGHT (clear of TP1-5) =====
+if barstate.islast
+    int zpLabelX = bar_index + zpLabelOffsetBars
+
+    if array.size(zpMinLabels) > 0
+        for i = 0 to array.size(zpMinLabels) - 1
+            label.set_x(array.get(zpMinLabels, i), zpLabelX)
+
+    if array.size(zpMaxLabels) > 0
+        for i = 0 to array.size(zpMaxLabels) - 1
+            label.set_x(array.get(zpMaxLabels, i), zpLabelX)
+
+// ===== ZERO V.02 FEAR & GREED ENGINE =====
+
+float rsiScore = math.max(0.0, math.min(100.0, rsiVal))
+
+float macdScore = m > s ? 100.0 : m < s ? 0.0 : 50.0
+
+float vwapScore = close > vwapV ? 100.0 : close < vwapV ? 0.0 : 50.0
+
+float trendScore = ema9 > ema21 ? 100.0 : ema9 < ema21 ? 0.0 : 50.0
+
+float volumeScore = volume > volAvg ? (close > close[1] ? 100.0 : 0.0) : 50.0
+
+float fearGreedScore = (
+     rsiScore * 0.20 +
+     macdScore * 0.20 +
+     vwapScore * 0.20 +
+     trendScore * 0.20 +
+     volumeScore * 0.10 +
+     50.0 * 0.10
+)
+
+string fearGreedText = fearGreedScore <= 20 ? "EXTREME FEAR" :
+     fearGreedScore <= 40 ? "FEAR" :
+     fearGreedScore <= 60 ? "NEUTRAL" :
+     fearGreedScore <= 80 ? "GREED" :
+     "EXTREME GREED"
+
+color fearGreedColor = fearGreedScore <= 20 ? color.red :
+     fearGreedScore <= 40 ? color.orange :
+     fearGreedScore <= 60 ? color.gray :
+     fearGreedScore <= 80 ? color.green :
+     color.lime
+
+string fearGreedDisplay = str.tostring(math.round(fearGreedScore)) + " | " + fearGreedText
+
+// --- DUAL SCORE LOGIC ---
+float bScore = 0.0
+if close > vwapV
+    bScore += 1.0
+if rsiVal > 50
+    bScore += 1.0
+if m > s
+    bScore += 1.0
+if ema9 > ema21
+    bScore += 1.0
+if adx > 25 and close > ema9
+    bScore += 1.0
+if volume > volAvg and close > open
+    bScore += 1.0
+if rsi5m > 50
+    bScore += 1.0
+float bullPct = (bScore / 7.0) * 100.0
+
+float rScore = 0.0
+if close < vwapV
+    rScore += 1.0
+if rsiVal < 50
+    rScore += 1.0
+if m < s
+    rScore += 1.0
+if ema9 < ema21
+    rScore += 1.0
+if adx > 25 and close < ema9
+    rScore += 1.0
+if volume > volAvg and close < open
+    rScore += 1.0
+if rsi5m < 50
+    rScore += 1.0
+float bearPct = (rScore / 7.0) * 100.0
+
+// --- BIAS DETERMINATION ---
+string biasText = (bullPct - bearPct) >= 40.0 ? "STRONG BULL" : (bearPct - bullPct) >= 40.0 ? "STRONG BEAR" : (bullPct > bearPct ? "MILD BULL" : "MILD BEAR")
+color biasCol   = biasText == "STRONG BULL" ? color.green : (biasText == "STRONG BEAR" ? color.red : color.gray)
+
+// ============================================================================
+// --- SIGNAL LOGIC & TRADE SETUP ---
+
+// TP risk only. This variable is NOT used for SL.
+float risk = atr * atrMultiplier
+// ============================================================================
+
+var int lastSignalState = 0 
+var int signalBarIdx    = 0
+var bool confirmationDone = false
+var int confirmationBarIdx = na
+var float confirmationP = na
+var float entryP = 0.0
+var float entryATR = na
+var float slP = 0.0
+var float slDistance = 0.0
+var float t1 = 0.0
+var float t2 = 0.0
+var float t3 = 0.0
+var float t4 = 0.0
+var float t5 = 0.0
+
+buyCond     = ta.crossover(ema9, ema21)
+sellCond    = ta.crossunder(ema9, ema21)
+triggerBuy  = buyCond and lastSignalState <= 0
+triggerSell = sellCond and lastSignalState >= 0
+
+if triggerBuy
+    itmStrike = math.round((close - 50) / strikeStep) * strikeStep
+    itmOption := str.tostring(itmStrike, "#.##") + " CE"
+
+else if triggerSell
+    itmStrike = math.round((close + 50) / strikeStep) * strikeStep
+    itmOption := str.tostring(itmStrike, "#.##") + " PE"
+
+if triggerBuy or triggerSell
+    lastSignalState := triggerBuy ? 1 : -1
+    signalBarIdx := bar_index
+    confirmationDone := false
+    confirmationBarIdx := na
+    confirmationP := na
+    entryP := close
+    entryATR := atr
+
+    // NO SL on the black signal/entry candle.
+    // The ENTRY CANDLE'S ATR is saved and used later at confirmation.
+    slP := na
+    slDistance := 0.0
+    qty := 0
+
+    tp2Qty := qty * 0.40
+    tp3Qty := qty * 0.30
+    tp5Qty := qty - tp2Qty - tp3Qty
+
+    t1 := triggerBuy ? (entryP + (risk * 1.0)) : (entryP - (risk * 1.0))
+    t2 := triggerBuy ? (entryP + (risk * 2.0)) : (entryP - (risk * 2.0))
+    t3 := triggerBuy ? (entryP + (risk * 3.0)) : (entryP - (risk * 3.0))
+    t4 := triggerBuy ? (entryP + (risk * 4.0)) : (entryP - (risk * 4.0))
+    t5 := triggerBuy ? (entryP + (risk * 5.0)) : (entryP - (risk * 5.0))
+
+    tp2Profit := math.abs(t2 - entryP) * tp2Qty * syminfo.pointvalue
+    tp3Profit := math.abs(t3 - entryP) * tp3Qty * syminfo.pointvalue
+    tp5Profit := math.abs(t5 - entryP) * tp5Qty * syminfo.pointvalue
+
+// --- DYNAMIC ACCURATE TARGET & STOP LOSS HIT EVALUATION ---
+bool slHit = false
+bool t1Hit = false
+bool t2Hit = false
+bool t3Hit = false
+bool t4Hit = false
+bool t5Hit = false
+
+if lastSignalState == 1 and confirmationDone and not na(confirmationP) and not na(confirmationBarIdx) and bar_index >= confirmationBarIdx
+    int barsSince = bar_index - confirmationBarIdx + 1
+    float minLow  = ta.lowest(low, barsSince)
+    float maxHigh = ta.highest(high, barsSince)
+    slHit := minLow <= slP
+    t1Hit := maxHigh >= t1
+    t2Hit := maxHigh >= t2
+    t3Hit := maxHigh >= t3
+    t4Hit := maxHigh >= t4
+    t5Hit := maxHigh >= t5
+
+if lastSignalState == -1 and confirmationDone and not na(confirmationP) and not na(confirmationBarIdx) and bar_index >= confirmationBarIdx
+    int barsSince = bar_index - confirmationBarIdx + 1
+    float maxHigh = ta.highest(high, barsSince)
+    float minLow  = ta.lowest(low, barsSince)
+    slHit := maxHigh >= slP
+    t1Hit := minLow <= t1
+    t2Hit := minLow <= t2
+    t3Hit := minLow <= t3
+    t4Hit := minLow <= t4
+    t5Hit := minLow <= t5
+
+// --- RETEST / PULLBACK CONDITION (ONLY NEAR ENTRY LEVEL) ---
+bool nearEntry = math.abs(close - entryP) <= (atr * 1.0)
+bool isRetest = nearEntry and ((lastSignalState == 1 and low <= ema9 and low > ema21) or (lastSignalState == -1 and high >= ema9 and high < ema21))
+
+// --- PURPLE CONFIRMATION CANDLE ---
+// Wait for ANY later candle after the Zero Point entry candle.
+// BUY: first later candle that CLOSES above the entry level.
+// SELL: first later candle that CLOSES below the entry level.
+// It can occur 2, 4, 7 or any number of candles later.
+// Only the first qualifying confirmation candle is colored purple.
+bool confirmationCandle = false
+if lastSignalState != 0 and not confirmationDone and bar_index > signalBarIdx
+    confirmationCandle := (lastSignalState == 1 and close > entryP) or (lastSignalState == -1 and close < entryP)
+    if confirmationCandle
+        confirmationDone := true
+        confirmationBarIdx := bar_index
+        confirmationP := close
+
+        // ================================================================
+        // FINAL SL RULE:
+        // Use the ATR VALUE from the BLACK ENTRY/SIGNAL CANDLE.
+        // Anchor that ATR-based distance to the PURPLE CONFIRMATION CLOSE.
+        // Entry price itself is NOT used as the SL anchor.
+        // ================================================================
+        // ================================================================
+        // ONLY SL FORMULA IN THIS SCRIPT:
+        // 1) entryATR = ATR captured on the BLACK entry candle
+        // 2) confirmationP = CLOSE of the PURPLE confirmation candle
+        // 3) SL is anchored ONLY to confirmationP
+        // ================================================================
+        float savedEntryCandleATR = entryATR
+        float savedATRDistance = savedEntryCandleATR * atrMultiplier
+        float confirmationSL = lastSignalState == 1
+             ? confirmationP - savedATRDistance
+             : confirmationP + savedATRDistance
+
+        slP := confirmationSL
+        slDistance = math.abs(confirmationP - confirmationSL)
+        qty := paperQuantity
+        tp2Qty := qty * 0.40
+        tp3Qty := qty * 0.30
+        tp5Qty := qty - tp2Qty - tp3Qty
+        tp2Profit := math.abs(t2 - confirmationP) * tp2Qty * syminfo.pointvalue
+        tp3Profit := math.abs(t3 - confirmationP) * tp3Qty * syminfo.pointvalue
+        tp5Profit := math.abs(t5 - confirmationP) * tp5Qty * syminfo.pointvalue
+
+// --- DYNAMIC STATUS COMPUTATION ---
+string dashStatus = "WAIT"
+color dashStatusColor = color.black
+
+if triggerBuy or triggerSell
+    dashStatus := "ENTERED"
+    dashStatusColor := color.blue
+else if slHit or t5Hit
+    dashStatus := "EXIT"
+    dashStatusColor := slHit ? color.red : color.green
+else if lastSignalState != 0
+    if isRetest or adx < 20
+        dashStatus := "EXHAUSTED"
+        dashStatusColor := color.orange
+    else
+        dashStatus := "HOLD"
+        dashStatusColor := color.green
+
+// ============================================================================
+// --- SIGNAL LABELS DIRECTLY ON CANDLES ---
+// ============================================================================
+
+plotshape(triggerBuy, title="Buy Signal Label", style=shape.labelup, location=location.belowbar, color=color.green, text="BUY", textcolor=color.white, size=size.small)
+plotshape(triggerSell, title="Sell Signal Label", style=shape.labeldown, location=location.abovebar, color=color.red, text="SELL", textcolor=color.white, size=size.small)
+
+// ============================================================================
+// --- DASHBOARD DISPLAY ---
+// ============================================================================
+
+var table d = table.new(f_getDashPos(dashPosInput), 2, 20, bgcolor=color.new(#e7e7e7, 10), border_width=1, border_color=color.new(#000000, 60))
+if barstate.islast
+    table.set_position(d, f_getDashPos(dashPosInput))
+
+    table.cell(d, 0, 0, "BULL SCORE", text_color=color.white, bgcolor=color.green, text_size=dashTextSize)
+    table.cell(d, 1, 0, str.tostring(bullPct, "#") + "%", text_color=color.rgb(249, 249, 249), bgcolor=color.green, text_size=dashTextSize)
+
+    table.cell(d, 0, 1, "BEAR SCORE", text_color=color.white, bgcolor=color.red, text_size=dashTextSize)
+    table.cell(d, 1, 1, str.tostring(bearPct, "#") + "%", text_color=color.rgb(254, 254, 254), bgcolor=color.red, text_size=dashTextSize)
+
+    table.cell(d, 0, 2, "MARKET BIAS", text_color=color.white, bgcolor=color.black, text_size=dashTextSize)
+    table.cell(d, 1, 2, biasText, text_color=color.rgb(0, 0, 0), bgcolor=biasCol, text_size=dashTextSize)
+    
+    f_addDashRow(d, 3,  "Price/VWAP", close > vwapV ? "ABOVE" : "BELOW", close > vwapV ? color.green : color.red, dashTextSize)
+    f_addDashRow(d, 4,  "RSI (14)", str.tostring(rsiVal, "#.#"), rsiVal > 50 ? color.green : color.red, dashTextSize)
+    f_addDashRow(d, 5,  "MACD Trend", m > s ? "BULL" : "BEAR", m > s ? color.green : color.red, dashTextSize)
+    f_addDashRow(d, 6,  "ADX Power", str.tostring(adx, "#.#"), adx > 25 ? color.green : color.gray, dashTextSize)
+    f_addDashRow(d, 7,  "EMA Cross", ema9 > ema21 ? "BULL" : "BEAR", ema9 > ema21 ? color.green : color.red, dashTextSize)
+    f_addDashRow(d, 8,  "ATR 14", str.tostring(atr, "#.##"), color.black, dashTextSize)
+    f_addDashRow(d, 9, "QTY", confirmationDone ? str.tostring(qty, "#.########") : "â€”", color.rgb(0, 0, 0), dashTextSize)
+    f_addDashRow(d, 10, "Vol Status", volume > volAvg ? "HIGH" : "LOW", volume > volAvg ? color.green : color.gray, dashTextSize)
+    f_addDashRow(d, 11, "Trend Str", adx > 25 ? "STRONG" : "WEAK", adx > 25 ? color.green : color.red, dashTextSize)
+    f_addDashRow(d, 12, "Status", dashStatus, dashStatusColor, dashTextSize)
+    f_addDashRow(d, 13, "Sniper Mode", "Zero V.02", color.blue, dashTextSize)
+    f_addDashRow(d, 14, "TP2 BOOK 40%", str.tostring(tp2Qty, "#.########") + " | " + syminfo.currency + " " + str.tostring(math.round(tp2Profit)), color.rgb(0, 0, 0), dashTextSize)
+    f_addDashRow(d, 15, "TP3 BOOK 30%", str.tostring(tp3Qty, "#.########") + " | " + syminfo.currency + " " + str.tostring(math.round(tp3Profit)), color.rgb(2, 2, 2), dashTextSize)
+    f_addDashRow(d, 16, "TP5 HOLD 30%", str.tostring(tp5Qty, "#.########") + " | " + syminfo.currency + " " + str.tostring(math.round(tp5Profit)), color.rgb(0, 0, 0), dashTextSize)
+    f_addDashRow(d, 17, "STOP DIST", str.tostring(math.abs(confirmationP - slP), "#.##"), color.red, dashTextSize)
+    f_addDashRow(d, 18, "ITM OPTION", itmOption, color.blue, dashTextSize)
+    f_addDashRow(d, 19, "Fear & Greed", fearGreedDisplay, fearGreedColor, dashTextSize)
+    
+// ============================================================================
+// --- VISUAL PLOTS & RIBBON ---
+// ============================================================================
+
+pFast = plot(ema9, color=color.new(color.green, 20), title="Fast EMA")
+pMid  = plot(ema21, color=color.new(color.red, 20), title="Mid EMA")
+pSlow = plot(ema200, color=color.blue, linewidth=2, title="Slow EMA")
+
+fill(pFast, pMid, color=(ema9 > ema21 ? color.new(color.green, 100 - ribbonOpacity) : color.new(color.red, 100 - ribbonOpacity)))
+
+barcolor(confirmationCandle ? color.purple : ((triggerBuy or triggerSell) ? color.black : (isRetest ? color.orange : na)))
+
+// ============================================================================
+// --- ZERO BUBBLE CASH - VOLUME BUBBLES ---
+// ============================================================================
+
+groupZeroBubbleCash = "ZERO BUBBLE CASH"
+
+showVolumeBubbles = input.bool(true, "Show Volume Bubbles", group=groupZeroBubbleCash)
+volumeBubbleLen = input.int(20, "Volume Average Length", minval=1, group=groupZeroBubbleCash)
+volumeBubbleBase = input.float(1.5, "Unusual Volume X", minval=1.0, step=0.1, group=groupZeroBubbleCash)
+volumeBubbleBig = input.float(2.0, "Large Bubble Volume X", minval=1.0, step=0.1, group=groupZeroBubbleCash)
+
+volumeBubbleAvg = ta.sma(volume, volumeBubbleLen)
+volumeBubbleRatio = volumeBubbleAvg > 0 ? volume / volumeBubbleAvg : 0.0
+
+volumeBubbleBull = showVolumeBubbles and close > open and volumeBubbleRatio >= volumeBubbleBase
+volumeBubbleBear = showVolumeBubbles and close < open and volumeBubbleRatio >= volumeBubbleBase
+
+volumeBubbleBullBig = volumeBubbleBull and volumeBubbleRatio >= volumeBubbleBig
+volumeBubbleBearBig = volumeBubbleBear and volumeBubbleRatio >= volumeBubbleBig
+
+plotshape(
+     volumeBubbleBullBig ? hl2 : na,
+     title="ZERO BUBBLE CASH Bull Large",
+     style=shape.circle,
+     location=location.absolute,
+     color=color.new(color.green, 20),
+     size=size.large)
+
+plotshape(
+     volumeBubbleBearBig ? hl2 : na,
+     title="ZERO BUBBLE CASH Bear Large",
+     style=shape.circle,
+     location=location.absolute,
+     color=color.new(color.red, 20),
+     size=size.large)
+
+plotshape(
+     volumeBubbleBull and not volumeBubbleBullBig ? hl2 : na,
+     title="ZERO BUBBLE CASH Bull",
+     style=shape.circle,
+     location=location.absolute,
+     color=color.new(color.green, 25),
+     size=size.normal)
+
+plotshape(
+     volumeBubbleBear and not volumeBubbleBearBig ? hl2 : na,
+     title="ZERO BUBBLE CASH Bear",
+     style=shape.circle,
+     location=location.absolute,
+     color=color.new(color.red, 25),
+     size=size.normal)
+
+// ============================================================================
+// --- TRADE LINES & LABELS ---
+// ============================================================================
+
+var line lE = na
+var line lCE = na
+var line lSL = na
+var line lT1 = na
+var line lT2 = na
+var line lT3 = na
+var line lT4 = na
+var line lT5 = na
+
+var label lbE   = na
+var label lbCE  = na
+var label lbSL  = na
+var label lbT1  = na
+var label lbT2  = na
+var label lbT3  = na
+var label lbT4  = na
+var label lbT5  = na
+var label lbQty = na
+
+// --- CREATE SL LINE/LABEL WHEN PURPLE CONFIRMATION OCCURS ---
+// The original trade-line block runs only on the black signal candle.
+// Because confirmation can happen several candles later, create the SL here.
+if confirmationCandle and confirmationDone and not na(confirmationP)
+    int slRightX = bar_index + labelOffsetBars
+    line.delete(lSL)
+    label.delete(lbSL)
+
+    // Draw ONLY the confirmation-anchored SL.
+    float drawSL = lastSignalState == 1
+         ? confirmationP - (entryATR * atrMultiplier)
+         : confirmationP + (entryATR * atrMultiplier)
+
+    // C ENTRY = the purple confirmation candle CLOSE.
+    line.delete(lCE)
+    label.delete(lbCE)
+    lCE := line.new(confirmationBarIdx, confirmationP, slRightX, confirmationP, color=color.purple, width=2, style=line.style_solid)
+    lbCE := label.new(slRightX, confirmationP, "C ENTRY: " + str.tostring(confirmationP, "#.##") + " âœ…", color=color.purple, textcolor=color.white, style=label.style_label_left, size=tradeTextSize)
+
+    lSL := line.new(confirmationBarIdx, drawSL, slRightX, drawSL, color=color.red, width=2, style=line.style_solid)
+    lbSL := label.new(slRightX, drawSL, "SL: " + str.tostring(drawSL, "#.##"), color=color.red, textcolor=color.white, style=label.style_label_left, size=tradeTextSize)
+
+    // QTY label placed exactly midway between C ENTRY and SL
+    label.delete(lbQty)
+    if showQtyLabel
+        lbQty := label.new(slRightX + qtyLabelOffsetBars, (confirmationP + drawSL) / 2.0, "PAPER QTY: " + str.tostring(qty, "#.########"), color=color.new(#ffffff, 10), textcolor=color.rgb(0, 0, 0), style=label.style_label_left, size=qtyLabelSize)
+
+if triggerBuy or triggerSell
+    line.delete(lE)
+    line.delete(lCE)
+    line.delete(lSL)
+    label.delete(lbCE)
+    label.delete(lbSL)
+    line.delete(lT1)
+    line.delete(lT2)
+    line.delete(lT3)
+    line.delete(lT4)
+    line.delete(lT5)
+    
+    label.delete(lbE)
+    label.delete(lbCE)
+    label.delete(lbSL)
+    label.delete(lbT1)
+    label.delete(lbT2)
+    label.delete(lbT3)
+    label.delete(lbT4)
+    label.delete(lbT5)
+    label.delete(lbQty)
+
+    int rightMarginX = bar_index + labelOffsetBars
+
+    lE := line.new(signalBarIdx, entryP, rightMarginX, entryP, color=color.blue, width=2, style=line.style_solid)
+    // SL is deliberately NOT created here.
+    // It is created only when confirmationCandle becomes true.
+    lT1 := line.new(signalBarIdx, t1,     rightMarginX, t1,     color=color.green, width=1, style=line.style_solid)
+    lT2 := line.new(signalBarIdx, t2,     rightMarginX, t2,     color=color.green, width=1, style=line.style_solid)
+    lT3 := line.new(signalBarIdx, t3,     rightMarginX, t3,     color=color.green, width=1, style=line.style_solid)
+    lT4 := line.new(signalBarIdx, t4,     rightMarginX, t4,     color=color.green, width=2, style=line.style_solid)
+    lT5 := line.new(signalBarIdx, t5,     rightMarginX, t5,     color=color.green, width=3, style=line.style_solid)
+
+    lbE := label.new(rightMarginX, entryP, "ENTRY: " + str.tostring(entryP, "#.##") + " âœ…", color=color.blue, textcolor=color.white, style=label.style_label_left, size=tradeTextSize)
+    // SL label is deliberately NOT created on the black signal candle.
+    lbT1 := label.new(rightMarginX, t1,     "TP1: "   + str.tostring(t1, "#.##"),             color=color.rgb(0, 0, 0), textcolor=color.white, style=label.style_label_left, size=tradeTextSize)
+    lbT2 := label.new(rightMarginX, t2,     "TP2: "   + str.tostring(t2, "#.##"),             color=color.rgb(3, 3, 3), textcolor=color.white, style=label.style_label_left, size=tradeTextSize)
+    lbT3 := label.new(rightMarginX, t3,     "TP3: "   + str.tostring(t3, "#.##"),             color=color.rgb(0, 0, 0), textcolor=color.white, style=label.style_label_left, size=tradeTextSize)
+    lbT4 := label.new(rightMarginX, t4,     "TP4: "   + str.tostring(t4, "#.##"),             color=color.rgb(0, 0, 0), textcolor=color.white, style=label.style_label_left, size=tradeTextSize)
+    lbT5 := label.new(rightMarginX, t5,     "TP5: "   + str.tostring(t5, "#.##"),             color=color.rgb(0, 0, 0), textcolor=color.white, style=label.style_label_left, size=tradeTextSize)
+
+if lastSignalState != 0
+    int targetX = barstate.islast ? (bar_index + labelOffsetBars) : (bar_index + 1)
+
+    line.set_x2(lE, targetX)
+    if confirmationDone and not na(lCE)
+        line.set_x2(lCE, targetX)
+    if confirmationDone and not na(lSL)
+        line.set_x2(lSL, targetX)
+    line.set_x2(lT1, targetX)
+    line.set_x2(lT2, targetX)
+    line.set_x2(lT3, targetX)
+    line.set_x2(lT4, targetX)
+    line.set_x2(lT5, targetX)
+
+    label.set_x(lbE, targetX)
+    if confirmationDone and not na(lbSL)
+        label.set_x(lbSL, targetX)
+    
+    if confirmationDone and not na(lbSL)
+        label.set_text(lbSL, "SL: " + str.tostring(slP, "#.##") + (slHit ? " ðŸ’£" : ""))
+
+    if confirmationDone and showQtyLabel and not na(lbQty)
+        label.set_x(lbQty, targetX + qtyLabelOffsetBars)
+        label.set_y(lbQty, (confirmationP + slP) / 2.0)
+        label.set_text(lbQty, "PAPER QTY: " + str.tostring(qty, "#.########"))
+
+    label.set_x(lbT1, targetX)
+    label.set_text(lbT1, "TP1: " + str.tostring(t1, "#.##") + (t1Hit ? " ðŸš€" : ""))
+    
+    label.set_x(lbT2, targetX)
+    label.set_text(lbT2, "TP2: " + str.tostring(t2, "#.##") + (t2Hit ? " ðŸš€" : ""))
+    
+    label.set_x(lbT3, targetX)
+    label.set_text(lbT3, "TP3: " + str.tostring(t3, "#.##") + (t3Hit ? " ðŸš€" : ""))
+    
+    label.set_x(lbT4, targetX)
+    label.set_text(lbT4, "TP4: " + str.tostring(t4, "#.##") + (t4Hit ? " ðŸš€" : ""))
+    
+    label.set_x(lbT5, targetX)
+    label.set_text(lbT5, "TP5: " + str.tostring(t5, "#.##") + (t5Hit ? " ðŸš€" : ""))
+
+plot(vwapV, color=close > vwapV ? color.green : color.red, linewidth=2, title="VWAP")
+
+
+// ===== PAPERDESK WEBHOOK INTEGRATION =====
+// Strategy signals and simulated fills only; no broker orders are sent.
+// Apply this script to the exact instrument whose prices should be paper traded.
+groupWebhook = "Paperdesk Webhook"
+webhookSecret = input.string("", "Webhook secret", group=groupWebhook, tooltip="Must match WEBHOOK_SECRET on the Paperdesk backend. Keep it private.")
+var string webhookTradeId = ""
+var bool webhookEntrySent = false
+var bool webhookExitSent = false
+var int webhookTradeSide = 0
+
+f_webhookBase(string eventName, string tradeId) =>
+    "{\"event\":\"" + eventName + "\",\"event_id\":\"" + eventName + "-" + tradeId + "-" + str.tostring(time_close) + "\",\"trade_id\":\"" + tradeId + "\",\"secret\":\"" + webhookSecret + "\",\"strategy\":\"ZERO_POINT_AUTOMATION\",\"symbol\":\"" + syminfo.tickerid + "\",\"timeframe\":\"" + timeframe.period + "\",\"timestamp\":\"" + str.tostring(time_close) + "\",\"source\":\"TRADINGVIEW\""
+
+// Close the prior Paperdesk trade on a confirmed signal reversal before its ID
+// and direction are replaced by the new setup.
+if (triggerBuy or triggerSell) and webhookEntrySent and not webhookExitSent and barstate.isconfirmed and webhookSecret != ""
+    string priorExitEvent = webhookTradeSide == 1 ? "EXIT_LONG" : "EXIT_SHORT"
+    string reversalJson = f_webhookBase(priorExitEvent, webhookTradeId) + ",\"price\":" + str.tostring(close, format.mintick) + ",\"exit_price\":" + str.tostring(close, format.mintick) + "}"
+    alert(reversalJson, alert.freq_once_per_bar_close)
+    webhookExitSent := true
+
+if triggerBuy or triggerSell
+    webhookTradeId := "ZERO_POINT_AUTOMATION-" + str.replace_all(syminfo.tickerid, ":", "_") + "-" + timeframe.period + "-" + str.tostring(time)
+    webhookEntrySent := false
+    webhookExitSent := false
+    webhookTradeSide := 0
+
+// The simulated entry is the strategy's confirmed purple candle close, not
+// the earlier crossover setup candle.
+if confirmationCandle and confirmationDone and not webhookEntrySent and qty > 0 and not na(confirmationP) and not na(slP) and barstate.isconfirmed and str.length(webhookSecret) >= 24
+    webhookTradeSide := lastSignalState
+    string entryEvent = webhookTradeSide == 1 ? "ENTRY_LONG" : "ENTRY_SHORT"
+    string entryJson = f_webhookBase(entryEvent, webhookTradeId) + ",\"price\":" + str.tostring(confirmationP, format.mintick) + ",\"entry_price\":" + str.tostring(confirmationP, format.mintick) + ",\"quantity\":" + str.tostring(qty) + ",\"stop_loss\":" + str.tostring(slP, format.mintick) + ",\"target\":" + str.tostring(t5, format.mintick) + "}"
+    alert(entryJson, alert.freq_once_per_bar_close)
+    webhookEntrySent := true
+
+// Paperdesk also monitors stop/target levels from the separate one-minute
+// PRICE_UPDATE alert. This strategy event keeps the record linked if its own
+// confirmed bar detects the stop/target first; duplicate terminal closes are
+// treated idempotently by the backend.
+bool webhookExitNow = slHit or t5Hit
+if webhookEntrySent and not webhookExitSent and webhookExitNow and bar_index > confirmationBarIdx and barstate.isconfirmed and webhookSecret != ""
+    string exitEvent = slHit ? "STOP_LOSS" : "TARGET_HIT"
+    float exitPrice = slHit ? slP : t5
+    string exitJson = f_webhookBase(exitEvent, webhookTradeId) + ",\"price\":" + str.tostring(exitPrice, format.mintick) + ",\"exit_price\":" + str.tostring(exitPrice, format.mintick) + ",\"exit_quantity\":" + str.tostring(qty) + "}"
+    alert(exitJson, alert.freq_once_per_bar_close)
+    webhookExitSent := true
