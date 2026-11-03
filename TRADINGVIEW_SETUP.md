@@ -53,6 +53,8 @@ For stop/target values to be monitored by Paperdesk, keep a price-monitor alert 
 
 Supported event names: `ENTRY_LONG`, `ENTRY_SHORT`, `EXIT_LONG`, `EXIT_SHORT`, `STOP_LOSS`, `TARGET_HIT`, `MODIFY_SL`, `MODIFY_TARGET`, `CLOSE_POSITION`, `PRICE_UPDATE`. Include JSON `secret`, `event_id`, `strategy`, `symbol`, `timeframe`, and `timestamp`. Include `trade_id` for each exit/modification; use `exit_quantity` for partial exits and `price` for stop/target modifications.
 
+The webhook receiver also normalizes legacy TradingView messages wrapped in a top-level `payload` object. For those messages it maps `ENTRY` plus `side` to `ENTRY_LONG`/`ENTRY_SHORT`, maps `EXIT` plus `order_id`/`fill_comment` stop or target reasons, and accepts `fill_price` and `event_time` aliases. New scripts should use the flat schema above.
+
 ## 5. Limits, delivery and security
 
 - TradingView Plus currently lists up to 100 active technical alerts. Price monitor and Pine signal alerts share that technical-alert quota. Check current [TradingView plan limits](https://www.tradingview.com/pricing/) before deciding the number of symbols/strategies.

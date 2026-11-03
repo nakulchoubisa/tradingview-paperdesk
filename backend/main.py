@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, model_validator
 from sqlalchemy import create_engine, String, Float, Boolean, DateTime, ForeignKey, Text, Index, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker, Session
@@ -74,6 +74,39 @@ class Login(BaseModel): username:str; password:str
 class EventPayload(BaseModel):
     model_config=ConfigDict(extra='allow')
     event:str; strategy:str=''; symbol:str; price:float|None=Field(default=None,gt=0); timestamp:str|None=None; timeframe:str=''; source:str='TRADINGVIEW'; secret:str|None=None; event_id:str|None=None; trade_id:str|None=None; direction:str|None=None; quantity:float|None=Field(default=None,gt=0); entry_price:float|None=Field(default=None,gt=0); stop_loss:float|None=Field(default=None,gt=0); target:float|None=Field(default=None,gt=0); exit_price:float|None=Field(default=None,gt=0); exit_quantity:float|None=Field(default=None,gt=0)
+
+    @model_validator(mode='before')
+    @classmethod
+    def normalize_tradingview_payload(cls, value):
+        if not isinstance(value,dict): return value
+        data=dict(value.get('payload')) if isinstance(value.get('payload'),dict) else dict(value)
+        for key,item in value.items():
+            if key!='payload': data.setdefault(key,item)
+        for key,aliases in {
+            'strategy':('strategy_id','strategy_name'), 'symbol':('ticker','instrument'),
+            'event_id':('id','alert_id'), 'trade_id':('position_id',),
+            'timestamp':('event_time','time'), 'timeframe':('interval',),
+            'quantity':('qty','position_size'), 'price':('fill_price','last_price'),
+            'entry_price':('fill_price',), 'exit_price':('fill_price',),
+            'target':('target_price','take_profit'), 'stop_loss':('stop_loss_price',),
+            'exit_quantity':('closed_quantity','fill_quantity'), 'direction':('side',)
+        }.items():
+            if data.get(key) is None:
+                for alias in aliases:
+                    if data.get(alias) is not None:
+                        data[key]=data[alias]; break
+        event=str(data.get('event') or data.get('event_type') or data.get('signal') or '').upper()
+        side=str(data.get('side') or data.get('direction') or data.get('signal') or '').upper()
+        reason=str(data.get('order_id') or data.get('fill_comment') or data.get('reason') or '').upper()
+        if data.get('timestamp') is not None: data['timestamp']=str(data['timestamp'])
+        if event in ('ENTRY','ENTER','OPEN'):
+            event='ENTRY_SHORT' if side in ('SHORT','SELL') else 'ENTRY_LONG'
+        elif event in ('EXIT','CLOSE','CLOSED'):
+            if 'STOP' in reason: event='STOP_LOSS'
+            elif 'TARGET' in reason or 'TAKE_PROFIT' in reason: event='TARGET_HIT'
+            else: event='EXIT_SHORT' if side in ('SHORT','SELL') else 'EXIT_LONG'
+        data['event']=event
+        return data
 
 def setting(s,key,default):
     row=s.get(Setting,key); return float(row.value) if row else default

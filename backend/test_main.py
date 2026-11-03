@@ -40,6 +40,20 @@ def test_body_secret_redacted_and_persisted():
     with SessionLocal() as s: assert s.query(Trade).filter_by(trade_id='persisted').one().entry_price==10
     logged=next(x for x in client.get('/api/events').json() if x['event_id']=='body-secret-entry')
     assert 'secret' not in logged['payload']
+
+def test_legacy_nested_tradingview_payload():
+    strategy='ZERO_POINT_AUTOMATION'; symbol='NSE:LEGACY-OPTION'; tid='legacy-paper-trade'
+    entry={'payload':{'secret':'test-webhook-secret','event':'ENTRY','event_id':'legacy-entry','strategy':strategy,'symbol':symbol,'side':'SHORT','trade_id':tid,'quantity':2,'fill_price':100,'stop_loss':105,'target':90,'event_time':1761972000000}}
+    opened=post(entry)
+    assert opened.status_code==200,opened.text
+    trade=next(t for t in client.get('/api/trades?status=OPEN').json() if t['trade_id']==tid)
+    assert trade['direction']=='SHORT' and trade['entry_price']==100
+    exit_event={'payload':{'secret':'test-webhook-secret','event':'EXIT','event_id':'legacy-stop','strategy':strategy,'symbol':symbol,'side':'SHORT','trade_id':tid,'order_id':'STOP_LOSS','quantity':2,'fill_price':106,'event_time':1761972060000}}
+    closed=post(exit_event)
+    assert closed.status_code==200,closed.text
+    trade=next(t for t in client.get('/api/trades').json() if t['trade_id']==tid)
+    assert trade['status']=='STOP_LOSS_HIT' and trade['exit_price']==106
+
 def test_bad_and_unmatched_events_are_recorded():
     r=post({'event':'EXIT_LONG','event_id':'unmatched','strategy':'none','symbol':'NSE:MISS','price':1})
     assert r.status_code==422
