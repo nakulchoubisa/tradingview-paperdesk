@@ -979,6 +979,7 @@ plot(vwapV, color=close > vwapV ? color.green : color.red, linewidth=2, title="V
 // Apply this script to the exact instrument whose prices should be paper traded.
 groupWebhook = "Paperdesk Webhook"
 webhookSecret = input.string("", "Webhook secret", group=groupWebhook, tooltip="Must match WEBHOOK_SECRET on the Paperdesk backend. Keep it private.")
+sendMarketPrices = input.bool(true, "Send 1-minute market prices", group=groupWebhook, tooltip="Emit one confirmed close price per 1-minute bar through this alert. Set the chart to 1 minute and recreate the alert after changing this input.")
 var string webhookTradeId = ""
 var bool webhookEntrySent = false
 var bool webhookExitSent = false
@@ -986,6 +987,14 @@ var int webhookTradeSide = 0
 
 f_webhookBase(string eventName, string tradeId) =>
     "{\"event\":\"" + eventName + "\",\"event_id\":\"" + eventName + "-" + tradeId + "-" + str.tostring(time_close) + "\",\"trade_id\":\"" + tradeId + "\",\"secret\":\"" + webhookSecret + "\",\"strategy\":\"ZERO_POINT_AUTOMATION\",\"symbol\":\"" + syminfo.tickerid + "\",\"timeframe\":\"" + timeframe.period + "\",\"timestamp\":\"" + str.tostring(time_close) + "\",\"source\":\"TRADINGVIEW\""
+
+// Reuse this script's existing Any alert() function call alert for market
+// data as well as entries/exits. A 1-minute chart keeps Paperdesk prices fresh.
+bool oneMinuteChart = timeframe.isminutes and timeframe.multiplier == 1
+if sendMarketPrices and oneMinuteChart and str.length(webhookSecret) >= 24 and barstate.isconfirmed
+    string priceEventId = "price-" + str.replace_all(syminfo.tickerid, ":", "_") + "-" + timeframe.period + "-" + str.tostring(time_close)
+    string priceJson = "{\"event\":\"PRICE_UPDATE\",\"event_id\":\"" + priceEventId + "\",\"secret\":\"" + webhookSecret + "\",\"strategy\":\"MARKET_PRICE_MONITOR\",\"symbol\":\"" + syminfo.tickerid + "\",\"price\":" + str.tostring(close, format.mintick) + ",\"timestamp\":\"" + str.tostring(time_close) + "\",\"timeframe\":\"" + timeframe.period + "\",\"source\":\"TRADINGVIEW\"}"
+    alert(priceJson, alert.freq_all)
 
 // Close the prior Paperdesk trade on a confirmed signal reversal before its ID
 // and direction are replaced by the new setup.
