@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
 import os
+from uuid import uuid4
 os.environ.setdefault('DATABASE_URL','sqlite:///./test_papertrade.db')
 os.environ['ADMIN_PASSWORD']='test-admin-password-123!'
 os.environ['SESSION_SECRET']='test-session-secret-long-enough'
@@ -26,6 +27,19 @@ def test_price_target_and_short_pnl():
     assert post({'event':'ENTRY_SHORT','event_id':'short-entry','trade_id':'short-trade','strategy':'short-s','symbol':'NSE:SHORT','entry_price':200,'quantity':3}).status_code==200
     assert post({'event':'PRICE_UPDATE','event_id':'price-short','strategy':'m','symbol':'NSE:SHORT','price':190}).status_code==200
     t=next(x for x in client.get('/api/trades?status=OPEN').json() if x['trade_id']=='short-trade'); assert t['unrealized_pnl']==30
+
+def test_price_lookup_uses_symbol_and_dashboard_serializes_trades():
+    suffix=uuid4().hex[:10]; symbol=f'NSE:PRICE-{suffix}'
+    assert post({'event':'PRICE_UPDATE','event_id':f'price-first-{suffix}','strategy':'monitor','symbol':symbol,'price':100}).status_code==200
+    assert post({'event':'PRICE_UPDATE','event_id':f'price-second-{suffix}','strategy':'monitor','symbol':symbol,'price':101}).status_code==200
+    assert post({'event':'ENTRY_LONG','event_id':f'price-entry-{suffix}','trade_id':f'price-trade-{suffix}','strategy':'regression','symbol':symbol,'price':101,'quantity':1}).status_code==200
+    login()
+    dashboard=client.get('/api/dashboard')
+    assert dashboard.status_code==200,dashboard.text
+    data=dashboard.json()
+    assert data['total_trades']>=1 and data['open_positions']>=1
+    trade=next(t for t in client.get('/api/trades?status=OPEN').json() if t['trade_id']==f'price-trade-{suffix}')
+    assert trade['price_updated_at'] is not None
 def test_partial_exit_stop_mod_and_reports():
     assert post({'event':'ENTRY_LONG','event_id':'p-entry','trade_id':'partial','strategy':'p','symbol':'NSE:P','price':10,'quantity':4}).status_code==200
     assert post({'event':'MODIFY_SL','event_id':'p-sl','trade_id':'partial','strategy':'p','symbol':'NSE:P','price':8}).status_code==200

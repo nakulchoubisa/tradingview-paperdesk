@@ -128,7 +128,7 @@ def process(s,p,event_id):
     typ=p.event.upper(); sid=p.strategy; sym=p.symbol
     if typ=='PRICE_UPDATE':
         if p.price is None or p.price<=0: raise ValueError('price must be positive')
-        row=s.get(Price,sym)
+        row=s.query(Price).filter_by(symbol=sym).first()
         if row: row.price=p.price; row.updated_at=datetime.now(timezone.utc); row.source=p.source; row.timeframe=p.timeframe
         else: s.add(Price(symbol=sym,price=p.price,source=p.source,timeframe=p.timeframe))
         for t in s.query(Trade).filter(Trade.symbol==sym,Trade.status.in_(['OPEN','PARTIALLY_CLOSED'])):
@@ -230,7 +230,8 @@ def simulate(payload:EventPayload,s:Session=Depends(db),u:User=Depends(current_u
     eid=payload.event_id or 'sim-'+secrets.token_hex(8); process(s,payload,eid); safe_payload=payload.model_dump(mode='json'); safe_payload.pop('secret',None); s.add(Event(event_id=eid,event_type=payload.event.upper(),strategy_id=payload.strategy,symbol=payload.symbol,status='PROCESSED',payload=safe_payload)); s.commit(); return {'event_id':eid,'status':'PROCESSED'}
 def trade_json(t,s):
     un=pnl(t,t.current_price) if t.status in ('OPEN','PARTIALLY_CLOSED') else 0
-    return {'trade_id':t.trade_id,'strategy':t.strategy_id,'symbol':t.symbol,'direction':t.direction,'quantity':t.quantity,'entry_price':t.entry_price,'current_price':t.current_price,'stop_loss':t.stop_loss,'target':t.target,'status':t.status,'entry_time':t.entry_time.isoformat(),'exit_time':t.exit_time.isoformat() if t.exit_time else None,'exit_price':t.exit_price,'gross_pnl':t.gross_pnl+un,'realized_pnl':t.gross_pnl,'unrealized_pnl':un,'charges':t.charges,'net_pnl':t.net_pnl+un,'exit_reason':t.exit_reason,'mfe':t.mfe,'mae':t.mae,'price_updated_at':(s.get(Price,t.symbol).updated_at.isoformat() if s.get(Price,t.symbol) else None)}
+    price_row=s.query(Price).filter_by(symbol=t.symbol).first()
+    return {'trade_id':t.trade_id,'strategy':t.strategy_id,'symbol':t.symbol,'direction':t.direction,'quantity':t.quantity,'entry_price':t.entry_price,'current_price':t.current_price,'stop_loss':t.stop_loss,'target':t.target,'status':t.status,'entry_time':t.entry_time.isoformat(),'exit_time':t.exit_time.isoformat() if t.exit_time else None,'exit_price':t.exit_price,'gross_pnl':t.gross_pnl+un,'realized_pnl':t.gross_pnl,'unrealized_pnl':un,'charges':t.charges,'net_pnl':t.net_pnl+un,'exit_reason':t.exit_reason,'mfe':t.mfe,'mae':t.mae,'price_updated_at':price_row.updated_at.isoformat() if price_row else None}
 @app.get('/api/dashboard')
 def dashboard(s:Session=Depends(db),u:User=Depends(current_user)):
     trades=s.query(Trade).all(); today=datetime.now(timezone.utc).date(); open_t=[t for t in trades if t.status in ('OPEN','PARTIALLY_CLOSED')]; closed=[t for t in trades if t.exit_time and t.exit_time.date()==today]; realized=sum(t.gross_pnl-t.charges for t in trades); daily=sum(float(ex.get('net',0)) for t in trades for ex in (t.executions or []) if ex.get('side')=='EXIT' and datetime.fromisoformat(ex['at']).date()==today); unreal=sum(pnl(t,t.current_price) for t in open_t)
