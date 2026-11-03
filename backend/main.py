@@ -73,7 +73,7 @@ def current_user(request:Request,s:Session=Depends(db)):
 class Login(BaseModel): username:str; password:str
 class EventPayload(BaseModel):
     model_config=ConfigDict(extra='allow')
-    event:str; strategy:str=''; symbol:str; price:float|None=Field(default=None,gt=0); timestamp:str|None=None; timeframe:str=''; source:str='TRADINGVIEW'; secret:str|None=None; event_id:str|None=None; trade_id:str|None=None; direction:str|None=None; quantity:float|None=Field(default=None,gt=0); entry_price:float|None=Field(default=None,gt=0); stop_loss:float|None=Field(default=None,gt=0); target:float|None=Field(default=None,gt=0); exit_price:float|None=Field(default=None,gt=0); exit_quantity:float|None=Field(default=None,gt=0)
+    event:str; strategy:str=''; symbol:str; price:float|None=Field(default=None,gt=0); timestamp:str|None=None; timeframe:str=''; source:str='TRADINGVIEW'; secret:str|None=None; event_id:str|None=None; trade_id:str|None=None; direction:str|None=None; quantity:float|None=Field(default=None,gt=0); entry_price:float|None=Field(default=None,gt=0); stop_loss:float|None=Field(default=None,gt=0); target:float|None=Field(default=None,gt=0); targets:list[float]|None=None; exit_price:float|None=Field(default=None,gt=0); exit_quantity:float|None=Field(default=None,gt=0)
 
     @model_validator(mode='before')
     @classmethod
@@ -117,12 +117,28 @@ def close_trade(s,t,price,reason,qty=None,event_id=''):
     q=min(t.quantity,qty if qty is not None else t.quantity)
     gross=(price-t.entry_price)*q*(1 if t.direction=='LONG' else -1); charges=setting(s,'charge_per_unit',0)*q
     t.gross_pnl+=gross; t.charges+=charges; t.net_pnl=t.gross_pnl-t.charges
-    t.executions=list(t.executions or [])+ [{'side':'EXIT','quantity':q,'price':price,'gross':gross,'charges':charges,'net':gross-charges,'at':datetime.now(timezone.utc).isoformat()}]
+    t.executions=list(t.executions or [])+ [{'side':'EXIT','quantity':q,'price':price,'gross':gross,'charges':charges,'net':gross-charges,'reason':reason,'at':datetime.now(timezone.utc).isoformat()}]
     s.add(Fill(trade_id=t.trade_id,event_id=event_id,side='EXIT',quantity=q,price=price))
     t.quantity-=q; t.current_price=price
     if t.quantity>1e-9: t.status='PARTIALLY_CLOSED'
     if t.quantity<=1e-9:
-        t.quantity=0; t.exit_price=price; t.exit_time=datetime.now(timezone.utc); t.exit_reason=reason; t.status={'STOP_LOSS':'STOP_LOSS_HIT','TARGET_HIT':'TARGET_HIT'}.get(reason,'CLOSED')
+        t.quantity=0; t.exit_price=price; t.exit_time=datetime.now(timezone.utc); t.exit_reason=reason; t.status={'STOP_LOSS':'STOP_LOSS_HIT','TARGET_HIT':'TARGET_HIT','TP5':'TARGET_HIT'}.get(reason,'CLOSED')
+
+def take_profit_levels(t):
+    for execution in t.executions or []:
+        levels=execution.get('targets') if execution.get('side')=='ENTRY' else None
+        if isinstance(levels,list) and len(levels)==5:
+            try: return [float(level) for level in levels]
+            except (TypeError,ValueError): return None
+    return None
+
+def take_profit_stage(t):
+    stage=0
+    for execution in t.executions or []:
+        reason=execution.get('reason','')
+        if isinstance(reason,str) and reason.startswith('TP') and reason[2:].isdigit():
+            stage=max(stage,int(reason[2:]))
+    return stage
 
 def process(s,p,event_id):
     typ=p.event.upper(); sid=p.strategy; sym=p.symbol
@@ -134,9 +150,22 @@ def process(s,p,event_id):
         for t in s.query(Trade).filter(Trade.symbol==sym,Trade.status.in_(['OPEN','PARTIALLY_CLOSED'])):
             t.current_price=p.price; up=pnl(t,p.price); t.mfe=max(t.mfe,up); t.mae=min(t.mae,up)
             hit=(t.stop_loss is not None and ((t.direction=='LONG' and p.price<=t.stop_loss) or (t.direction=='SHORT' and p.price>=t.stop_loss)))
-            target=(t.target is not None and ((t.direction=='LONG' and p.price>=t.target) or (t.direction=='SHORT' and p.price<=t.target)))
-            if hit: close_trade(s,t,p.price,'STOP_LOSS',event_id=event_id)
-            elif target: close_trade(s,t,p.price,'TARGET_HIT',event_id=event_id)
+            levels=take_profit_levels(t)
+            if hit:
+                close_trade(s,t,p.price,'STOP_LOSS',event_id=event_id)
+            elif levels:
+                stage=take_profit_stage(t)
+                entry=next((float(x['quantity']) for x in (t.executions or []) if x.get('side')=='ENTRY'),t.quantity)
+                while stage<5 and ((t.direction=='LONG' and p.price>=levels[stage]) or (t.direction=='SHORT' and p.price<=levels[stage])):
+                    stage+=1
+                    exit_qty=t.quantity if stage==5 else min(entry/5.0,t.quantity)
+                    close_trade(s,t,levels[stage-1],f'TP{stage}',qty=exit_qty,event_id=f'{event_id}-TP{stage}')
+                    if t.quantity<=1e-9: break
+                    t.stop_loss=t.entry_price if stage==1 else levels[stage-2]
+                    s.add(Audit(action='TRAIL_STOP',subject=t.trade_id,details={'after_target':stage,'value':t.stop_loss,'event_id':event_id}))
+            else:
+                target=(t.target is not None and ((t.direction=='LONG' and p.price>=t.target) or (t.direction=='SHORT' and p.price<=t.target)))
+                if target: close_trade(s,t,p.price,'TARGET_HIT',event_id=event_id)
         return
     if typ in ('ENTRY_LONG','ENTRY_SHORT'):
         direction='LONG' if typ=='ENTRY_LONG' else 'SHORT'; price=p.entry_price or p.price
@@ -145,7 +174,16 @@ def process(s,p,event_id):
         if s.query(Trade).filter_by(trade_id=tid).first(): return
         q=p.quantity or setting(s,'default_quantity',1)
         if q<=0: raise ValueError('quantity must be positive')
-        s.add(Trade(trade_id=tid,strategy_id=sid,symbol=sym,direction=direction,quantity=q,entry_price=price,current_price=price,stop_loss=p.stop_loss,target=p.target,executions=[{'side':'ENTRY','quantity':q,'price':price,'at':datetime.now(timezone.utc).isoformat()}]))
+        levels=p.targets
+        if levels is not None:
+            if len(levels)!=5 or any(x<=0 for x in levels): raise ValueError('targets must contain five positive prices')
+            ordered=all(levels[i]<levels[i+1] for i in range(4)) if direction=='LONG' else all(levels[i]>levels[i+1] for i in range(4))
+            ahead=all(x>price for x in levels) if direction=='LONG' else all(x<price for x in levels)
+            if not ordered or not ahead: raise ValueError('take-profit prices must be ordered beyond the entry')
+        final_target=levels[-1] if levels else p.target
+        entry_execution={'side':'ENTRY','quantity':q,'price':price,'at':datetime.now(timezone.utc).isoformat()}
+        if levels: entry_execution['targets']=[float(x) for x in levels]
+        s.add(Trade(trade_id=tid,strategy_id=sid,symbol=sym,direction=direction,quantity=q,entry_price=price,current_price=price,stop_loss=p.stop_loss,target=final_target,executions=[entry_execution]))
         s.add(Fill(trade_id=tid,event_id=event_id,side='ENTRY',quantity=q,price=price)); return
     candidates=s.query(Trade).filter(Trade.strategy_id==sid,Trade.symbol==sym,Trade.status.in_(['OPEN','PARTIALLY_CLOSED']))
     if p.trade_id: candidates=candidates.filter(Trade.trade_id==p.trade_id)
@@ -208,8 +246,20 @@ def webhook(payload:EventPayload,request:Request,x_webhook_secret:str|None=Heade
         existing.duplicate_count+=1; s.commit()
         return {'accepted':True,'duplicate':True,'event_id':eid,'duplicate_count':existing.duplicate_count}
     safe_payload=payload.model_dump(mode='json'); safe_payload.pop('secret',None)
-    ev=Event(event_id=eid,event_type=payload.event.upper(),strategy_id=payload.strategy,symbol=payload.symbol,payload=safe_payload)
-    s.add(ev)
+    if payload.event.upper()=='PRICE_UPDATE':
+        # Keep only the latest price snapshot per symbol in the event log.
+        # This prevents high-frequency feeds from growing the hosted database
+        # without bound; the market_prices table remains the current quote store.
+        ev=s.query(Event).filter_by(event_type='PRICE_UPDATE',symbol=payload.symbol).first()
+        if ev:
+            ev.event_id=eid; ev.strategy_id=payload.strategy; ev.received_at=datetime.now(timezone.utc)
+            ev.status='RECEIVED'; ev.error=''; ev.payload=safe_payload
+        else:
+            ev=Event(event_id=eid,event_type='PRICE_UPDATE',strategy_id=payload.strategy,symbol=payload.symbol,payload=safe_payload)
+            s.add(ev)
+    else:
+        ev=Event(event_id=eid,event_type=payload.event.upper(),strategy_id=payload.strategy,symbol=payload.symbol,payload=safe_payload)
+        s.add(ev)
     try:
         process(s,payload,eid); ev.status='PROCESSED'; s.commit()
     except IntegrityError:
@@ -231,11 +281,11 @@ def simulate(payload:EventPayload,s:Session=Depends(db),u:User=Depends(current_u
 def trade_json(t,s):
     un=pnl(t,t.current_price) if t.status in ('OPEN','PARTIALLY_CLOSED') else 0
     price_row=s.query(Price).filter_by(symbol=t.symbol).first()
-    return {'trade_id':t.trade_id,'strategy':t.strategy_id,'symbol':t.symbol,'direction':t.direction,'quantity':t.quantity,'entry_price':t.entry_price,'current_price':t.current_price,'stop_loss':t.stop_loss,'target':t.target,'status':t.status,'entry_time':t.entry_time.isoformat(),'exit_time':t.exit_time.isoformat() if t.exit_time else None,'exit_price':t.exit_price,'gross_pnl':t.gross_pnl+un,'realized_pnl':t.gross_pnl,'unrealized_pnl':un,'charges':t.charges,'net_pnl':t.net_pnl+un,'exit_reason':t.exit_reason,'mfe':t.mfe,'mae':t.mae,'price_updated_at':price_row.updated_at.isoformat() if price_row else None}
+    return {'trade_id':t.trade_id,'strategy':t.strategy_id,'symbol':t.symbol,'direction':t.direction,'quantity':t.quantity,'entry_price':t.entry_price,'current_price':t.current_price,'stop_loss':t.stop_loss,'target':t.target,'targets':take_profit_levels(t),'target_stage':take_profit_stage(t),'status':t.status,'entry_time':t.entry_time.isoformat(),'exit_time':t.exit_time.isoformat() if t.exit_time else None,'exit_price':t.exit_price,'gross_pnl':t.gross_pnl+un,'realized_pnl':t.gross_pnl,'unrealized_pnl':un,'charges':t.charges,'net_pnl':t.net_pnl+un,'exit_reason':t.exit_reason,'mfe':t.mfe,'mae':t.mae,'price_updated_at':price_row.updated_at.isoformat() if price_row else None}
 @app.get('/api/dashboard')
 def dashboard(s:Session=Depends(db),u:User=Depends(current_user)):
     trades=s.query(Trade).all(); today=datetime.now(timezone.utc).date(); open_t=[t for t in trades if t.status in ('OPEN','PARTIALLY_CLOSED')]; closed=[t for t in trades if t.exit_time and t.exit_time.date()==today]; realized=sum(t.gross_pnl-t.charges for t in trades); daily=sum(float(ex.get('net',0)) for t in trades for ex in (t.executions or []) if ex.get('side')=='EXIT' and datetime.fromisoformat(ex['at']).date()==today); unreal=sum(pnl(t,t.current_price) for t in open_t)
-    return {'today_pnl':daily,'total_realized_pnl':realized,'unrealized_pnl':unreal,'open_positions':len(open_t),'total_trades':len(trades),'win_rate':(100*sum(t.net_pnl>0 for t in trades if t.exit_time)/max(1,sum(bool(t.exit_time) for t in trades))),'open_trades':[trade_json(t,s) for t in open_t],'closed_trades':[trade_json(t,s) for t in sorted(trades,key=lambda x:x.entry_time,reverse=True) if t.exit_time][:30],'events':[{'event_id':e.event_id,'event':e.event_type,'symbol':e.symbol,'status':e.status,'duplicate_count':e.duplicate_count,'received_at':e.received_at.isoformat(),'error':e.error} for e in s.query(Event).order_by(Event.id.desc()).limit(10)],'prices':[{'symbol':p.symbol,'price':p.price,'updated_at':p.updated_at.isoformat(),'status':'LIVE' if (datetime.now(timezone.utc)-(p.updated_at.replace(tzinfo=timezone.utc) if p.updated_at.tzinfo is None else p.updated_at)).total_seconds()<180 else 'STALE','source':p.source} for p in s.query(Price).all()]}
+    return {'today_pnl':daily,'total_realized_pnl':realized,'unrealized_pnl':unreal,'open_positions':len(open_t),'total_trades':len(trades),'win_rate':(100*sum(t.net_pnl>0 for t in trades if t.exit_time)/max(1,sum(bool(t.exit_time) for t in trades))),'open_trades':[trade_json(t,s) for t in open_t],'closed_trades':[trade_json(t,s) for t in sorted(trades,key=lambda x:x.entry_time,reverse=True) if t.exit_time][:30],'events':[{'event_id':e.event_id,'event':e.event_type,'symbol':e.symbol,'status':e.status,'duplicate_count':e.duplicate_count,'received_at':e.received_at.isoformat(),'error':e.error} for e in s.query(Event).order_by(Event.received_at.desc()).limit(10)],'prices':[{'symbol':p.symbol,'price':p.price,'updated_at':p.updated_at.isoformat(),'status':'LIVE' if (datetime.now(timezone.utc)-(p.updated_at.replace(tzinfo=timezone.utc) if p.updated_at.tzinfo is None else p.updated_at)).total_seconds()<180 else 'STALE','source':p.source} for p in s.query(Price).all()]}
 @app.get('/api/trades')
 def trades(status:str|None=None,strategy:str|None=None,symbol:str|None=None,s:Session=Depends(db),u:User=Depends(current_user)):
     q=s.query(Trade)
@@ -263,7 +313,7 @@ def event_summary(s:Session=Depends(db),u:User=Depends(current_user)):
     rows=s.query(Event).all()
     return {'total':len(rows),'successful':sum(e.status=='PROCESSED' for e in rows),'failed':sum(e.status=='FAILED' for e in rows),'duplicates':sum(e.duplicate_count for e in rows),'last_received':max((e.received_at.isoformat() for e in rows),default=None)}
 @app.get('/api/events')
-def events(s:Session=Depends(db),u:User=Depends(current_user)): return [{'event_id':e.event_id,'event':e.event_type,'strategy':e.strategy_id,'symbol':e.symbol,'status':e.status,'duplicate_count':e.duplicate_count,'error':e.error,'received_at':e.received_at.isoformat(),'payload':e.payload} for e in s.query(Event).order_by(Event.id.desc()).limit(300).all()]
+def events(s:Session=Depends(db),u:User=Depends(current_user)): return [{'event_id':e.event_id,'event':e.event_type,'strategy':e.strategy_id,'symbol':e.symbol,'status':e.status,'duplicate_count':e.duplicate_count,'error':e.error,'received_at':e.received_at.isoformat(),'payload':e.payload} for e in s.query(Event).order_by(Event.received_at.desc()).limit(300).all()]
 @app.get('/api/reports')
 def reports(s:Session=Depends(db),u:User=Depends(current_user)):
     rows=s.query(Trade).all(); closed=[t for t in rows if t.exit_time]; gross=sum(t.gross_pnl for t in closed); net=sum(t.net_pnl for t in closed); wins=[t for t in closed if t.net_pnl>0]; losses=[t for t in closed if t.net_pnl<0]; by={}

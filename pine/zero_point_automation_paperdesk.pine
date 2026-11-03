@@ -596,6 +596,7 @@ var float t2 = 0.0
 var float t3 = 0.0
 var float t4 = 0.0
 var float t5 = 0.0
+var int tpStage = 0
 
 buyCond     = ta.crossover(ema9, ema21)
 sellCond    = ta.crossunder(ema9, ema21)
@@ -613,6 +614,7 @@ else if triggerSell
 if triggerBuy or triggerSell
     lastSignalState := triggerBuy ? 1 : -1
     signalBarIdx := bar_index
+    tpStage := 0
     confirmationDone := false
     confirmationBarIdx := na
     confirmationP := na
@@ -648,26 +650,26 @@ bool t4Hit = false
 bool t5Hit = false
 
 if lastSignalState == 1 and confirmationDone and not na(confirmationP) and not na(confirmationBarIdx) and bar_index >= confirmationBarIdx
-    int barsSince = bar_index - confirmationBarIdx + 1
-    float minLow  = ta.lowest(low, barsSince)
-    float maxHigh = ta.highest(high, barsSince)
-    slHit := minLow <= slP
-    t1Hit := maxHigh >= t1
-    t2Hit := maxHigh >= t2
-    t3Hit := maxHigh >= t3
-    t4Hit := maxHigh >= t4
-    t5Hit := maxHigh >= t5
+    slHit := low <= slP
+    while not slHit and tpStage < 5 and high >= (tpStage == 0 ? t1 : tpStage == 1 ? t2 : tpStage == 2 ? t3 : tpStage == 3 ? t4 : t5)
+        tpStage += 1
+        slP := tpStage == 1 ? confirmationP : tpStage == 2 ? t1 : tpStage == 3 ? t2 : tpStage == 4 ? t3 : t4
+    t1Hit := tpStage >= 1
+    t2Hit := tpStage >= 2
+    t3Hit := tpStage >= 3
+    t4Hit := tpStage >= 4
+    t5Hit := tpStage >= 5
 
 if lastSignalState == -1 and confirmationDone and not na(confirmationP) and not na(confirmationBarIdx) and bar_index >= confirmationBarIdx
-    int barsSince = bar_index - confirmationBarIdx + 1
-    float maxHigh = ta.highest(high, barsSince)
-    float minLow  = ta.lowest(low, barsSince)
-    slHit := maxHigh >= slP
-    t1Hit := minLow <= t1
-    t2Hit := minLow <= t2
-    t3Hit := minLow <= t3
-    t4Hit := minLow <= t4
-    t5Hit := minLow <= t5
+    slHit := high >= slP
+    while not slHit and tpStage < 5 and low <= (tpStage == 0 ? t1 : tpStage == 1 ? t2 : tpStage == 2 ? t3 : tpStage == 3 ? t4 : t5)
+        tpStage += 1
+        slP := tpStage == 1 ? confirmationP : tpStage == 2 ? t1 : tpStage == 3 ? t2 : tpStage == 4 ? t3 : t4
+    t1Hit := tpStage >= 1
+    t2Hit := tpStage >= 2
+    t3Hit := tpStage >= 3
+    t4Hit := tpStage >= 4
+    t5Hit := tpStage >= 5
 
 // --- RETEST / PULLBACK CONDITION (ONLY NEAR ENTRY LEVEL) ---
 bool nearEntry = math.abs(close - entryP) <= (atr * 1.0)
@@ -701,6 +703,12 @@ if lastSignalState != 0 and not confirmationDone and bar_index > signalBarIdx
         // ================================================================
         float savedEntryCandleATR = entryATR
         float savedATRDistance = savedEntryCandleATR * atrMultiplier
+        t1 := lastSignalState == 1 ? confirmationP + savedATRDistance : confirmationP - savedATRDistance
+        t2 := lastSignalState == 1 ? confirmationP + savedATRDistance * 2.0 : confirmationP - savedATRDistance * 2.0
+        t3 := lastSignalState == 1 ? confirmationP + savedATRDistance * 3.0 : confirmationP - savedATRDistance * 3.0
+        t4 := lastSignalState == 1 ? confirmationP + savedATRDistance * 4.0 : confirmationP - savedATRDistance * 4.0
+        t5 := lastSignalState == 1 ? confirmationP + savedATRDistance * 5.0 : confirmationP - savedATRDistance * 5.0
+        tpStage := 0
         float confirmationSL = lastSignalState == 1
              ? confirmationP - savedATRDistance
              : confirmationP + savedATRDistance
@@ -979,7 +987,9 @@ plot(vwapV, color=close > vwapV ? color.green : color.red, linewidth=2, title="V
 // Apply this script to the exact instrument whose prices should be paper traded.
 groupWebhook = "Paperdesk Webhook"
 webhookSecret = input.string("", "Webhook secret", group=groupWebhook, tooltip="Must match WEBHOOK_SECRET on the Paperdesk backend. Keep it private.")
-sendMarketPrices = input.bool(true, "Send 1-minute market prices", group=groupWebhook, tooltip="Emit one confirmed close price per 1-minute bar through this alert. Set the chart to 1 minute and recreate the alert after changing this input.")
+sendMarketPrices = input.bool(true, "Send frequent market prices", group=groupWebhook, tooltip="Send realtime price snapshots while the chart receives updates. TradingView limits alerts to 15 per 3 minutes; 30 seconds leaves room for trade alerts.")
+marketPriceIntervalSeconds = input.int(30, "Market price interval (seconds)", minval=20, maxval=120, step=5, group=groupWebhook, tooltip="A 1-second webhook cadence exceeds TradingView alert limits. This sets the minimum interval between price snapshots.")
+varip int lastPriceAlertMs = na
 var string webhookTradeId = ""
 var bool webhookEntrySent = false
 var bool webhookExitSent = false
@@ -989,12 +999,14 @@ f_webhookBase(string eventName, string tradeId) =>
     "{\"event\":\"" + eventName + "\",\"event_id\":\"" + eventName + "-" + tradeId + "-" + str.tostring(time_close) + "\",\"trade_id\":\"" + tradeId + "\",\"secret\":\"" + webhookSecret + "\",\"strategy\":\"ZERO_POINT_AUTOMATION\",\"symbol\":\"" + syminfo.tickerid + "\",\"timeframe\":\"" + timeframe.period + "\",\"timestamp\":\"" + str.tostring(time_close) + "\",\"source\":\"TRADINGVIEW\""
 
 // Reuse this script's existing Any alert() function call alert for market
-// data as well as entries/exits. A 1-minute chart keeps Paperdesk prices fresh.
+// data as well as entries/exits. Pine can only run when the chart gets updates.
 bool oneMinuteChart = timeframe.isminutes and timeframe.multiplier == 1
-if sendMarketPrices and oneMinuteChart and str.length(webhookSecret) >= 24 and barstate.isconfirmed
-    string priceEventId = "price-" + str.replace_all(syminfo.tickerid, ":", "_") + "-" + timeframe.period + "-" + str.tostring(time_close)
-    string priceJson = "{\"event\":\"PRICE_UPDATE\",\"event_id\":\"" + priceEventId + "\",\"secret\":\"" + webhookSecret + "\",\"strategy\":\"MARKET_PRICE_MONITOR\",\"symbol\":\"" + syminfo.tickerid + "\",\"price\":" + str.tostring(close, format.mintick) + ",\"timestamp\":\"" + str.tostring(time_close) + "\",\"timeframe\":\"" + timeframe.period + "\",\"source\":\"TRADINGVIEW\"}"
+bool priceIntervalElapsed = na(lastPriceAlertMs) or timenow - lastPriceAlertMs >= marketPriceIntervalSeconds * 1000
+if sendMarketPrices and oneMinuteChart and str.length(webhookSecret) >= 24 and barstate.isrealtime and priceIntervalElapsed
+    string priceEventId = "price-" + str.replace_all(syminfo.tickerid, ":", "_") + "-" + timeframe.period + "-" + str.tostring(timenow)
+    string priceJson = "{\"event\":\"PRICE_UPDATE\",\"event_id\":\"" + priceEventId + "\",\"secret\":\"" + webhookSecret + "\",\"strategy\":\"MARKET_PRICE_MONITOR\",\"symbol\":\"" + syminfo.tickerid + "\",\"price\":" + str.tostring(close, format.mintick) + ",\"timestamp\":\"" + str.tostring(timenow) + "\",\"timeframe\":\"" + timeframe.period + "\",\"source\":\"TRADINGVIEW\"}"
     alert(priceJson, alert.freq_all)
+    lastPriceAlertMs := timenow
 
 // Close the prior Paperdesk trade on a confirmed signal reversal before its ID
 // and direction are replaced by the new setup.
@@ -1015,7 +1027,8 @@ if triggerBuy or triggerSell
 if confirmationCandle and confirmationDone and not webhookEntrySent and qty > 0 and not na(confirmationP) and not na(slP) and barstate.isconfirmed and str.length(webhookSecret) >= 24
     webhookTradeSide := lastSignalState
     string entryEvent = webhookTradeSide == 1 ? "ENTRY_LONG" : "ENTRY_SHORT"
-    string entryJson = f_webhookBase(entryEvent, webhookTradeId) + ",\"price\":" + str.tostring(confirmationP, format.mintick) + ",\"entry_price\":" + str.tostring(confirmationP, format.mintick) + ",\"quantity\":" + str.tostring(qty) + ",\"stop_loss\":" + str.tostring(slP, format.mintick) + ",\"target\":" + str.tostring(t5, format.mintick) + "}"
+    string targetLevelsJson = "[" + str.tostring(t1, format.mintick) + "," + str.tostring(t2, format.mintick) + "," + str.tostring(t3, format.mintick) + "," + str.tostring(t4, format.mintick) + "," + str.tostring(t5, format.mintick) + "]"
+    string entryJson = f_webhookBase(entryEvent, webhookTradeId) + ",\"price\":" + str.tostring(confirmationP, format.mintick) + ",\"entry_price\":" + str.tostring(confirmationP, format.mintick) + ",\"quantity\":" + str.tostring(qty) + ",\"stop_loss\":" + str.tostring(slP, format.mintick) + ",\"target\":" + str.tostring(t5, format.mintick) + ",\"targets\":" + targetLevelsJson + "}"
     alert(entryJson, alert.freq_once_per_bar_close)
     webhookEntrySent := true
 

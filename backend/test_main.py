@@ -28,6 +28,30 @@ def test_price_target_and_short_pnl():
     assert post({'event':'PRICE_UPDATE','event_id':'price-short','strategy':'m','symbol':'NSE:SHORT','price':190}).status_code==200
     t=next(x for x in client.get('/api/trades?status=OPEN').json() if x['trade_id']=='short-trade'); assert t['unrealized_pnl']==30
 
+def test_five_targets_take_equal_slices_and_trail_stop():
+    tid='five-target-long'; levels=[110,120,130,140,150]
+    opened=post({'event':'ENTRY_LONG','event_id':'five-target-entry','trade_id':tid,'strategy':'staged','symbol':'NSE:STAGED','entry_price':100,'quantity':10,'stop_loss':90,'target':150,'targets':levels})
+    assert opened.status_code==200,opened.text
+    assert post({'event':'PRICE_UPDATE','event_id':'five-target-p1','strategy':'monitor','symbol':'NSE:STAGED','price':115}).status_code==200
+    trade=next(x for x in client.get('/api/trades').json() if x['trade_id']==tid)
+    assert trade['quantity']==8 and trade['stop_loss']==100 and trade['target_stage']==1 and trade['targets']==levels
+    assert post({'event':'PRICE_UPDATE','event_id':'five-target-p3','strategy':'monitor','symbol':'NSE:STAGED','price':135}).status_code==200
+    trade=next(x for x in client.get('/api/trades').json() if x['trade_id']==tid)
+    assert trade['quantity']==4 and trade['stop_loss']==120 and trade['target_stage']==3
+    assert post({'event':'PRICE_UPDATE','event_id':'five-target-p5','strategy':'monitor','symbol':'NSE:STAGED','price':151}).status_code==200
+    trade=next(x for x in client.get('/api/trades').json() if x['trade_id']==tid)
+    assert trade['status']=='TARGET_HIT' and trade['exit_reason']=='TP5' and trade['realized_pnl']==300
+
+def test_five_target_short_and_breakeven_trail_stop():
+    tid='five-target-short'; levels=[90,80,70,60,50]
+    assert post({'event':'ENTRY_SHORT','event_id':'five-target-short-entry','trade_id':tid,'strategy':'staged','symbol':'NSE:STAGED-S','entry_price':100,'quantity':5,'stop_loss':110,'target':50,'targets':levels}).status_code==200
+    assert post({'event':'PRICE_UPDATE','event_id':'five-target-short-p1','strategy':'monitor','symbol':'NSE:STAGED-S','price':89}).status_code==200
+    trade=next(x for x in client.get('/api/trades').json() if x['trade_id']==tid)
+    assert trade['quantity']==4 and trade['stop_loss']==100 and trade['target_stage']==1
+    assert post({'event':'PRICE_UPDATE','event_id':'five-target-short-stop','strategy':'monitor','symbol':'NSE:STAGED-S','price':100}).status_code==200
+    trade=next(x for x in client.get('/api/trades').json() if x['trade_id']==tid)
+    assert trade['status']=='STOP_LOSS_HIT' and trade['exit_reason']=='STOP_LOSS' and trade['realized_pnl']==10
+
 def test_price_lookup_uses_symbol_and_dashboard_serializes_trades():
     suffix=uuid4().hex[:10]; symbol=f'NSE:PRICE-{suffix}'
     assert post({'event':'PRICE_UPDATE','event_id':f'price-first-{suffix}','strategy':'monitor','symbol':symbol,'price':100}).status_code==200
@@ -40,6 +64,13 @@ def test_price_lookup_uses_symbol_and_dashboard_serializes_trades():
     assert data['total_trades']>=1 and data['open_positions']>=1
     trade=next(t for t in client.get('/api/trades?status=OPEN').json() if t['trade_id']==f'price-trade-{suffix}')
     assert trade['price_updated_at'] is not None
+
+def test_price_update_event_log_keeps_latest_snapshot_per_symbol():
+    suffix=uuid4().hex[:8]; symbol=f'NSE:COALESCE-{suffix}'
+    assert post({'event':'PRICE_UPDATE','event_id':f'price-a-{suffix}','strategy':'monitor','symbol':symbol,'price':100}).status_code==200
+    assert post({'event':'PRICE_UPDATE','event_id':f'price-b-{suffix}','strategy':'monitor','symbol':symbol,'price':101}).status_code==200
+    rows=[x for x in client.get('/api/events').json() if x['symbol']==symbol and x['event']=='PRICE_UPDATE']
+    assert len(rows)==1 and rows[0]['event_id']==f'price-b-{suffix}' and rows[0]['payload']['price']==101
 def test_partial_exit_stop_mod_and_reports():
     assert post({'event':'ENTRY_LONG','event_id':'p-entry','trade_id':'partial','strategy':'p','symbol':'NSE:P','price':10,'quantity':4}).status_code==200
     assert post({'event':'MODIFY_SL','event_id':'p-sl','trade_id':'partial','strategy':'p','symbol':'NSE:P','price':8}).status_code==200
