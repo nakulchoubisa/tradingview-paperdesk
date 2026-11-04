@@ -1,6 +1,7 @@
 from __future__ import annotations
 import csv, hashlib, io, json, logging, os, secrets, time, math
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 from decimal import Decimal
 from typing import Any
 from fastapi import FastAPI, Depends, HTTPException, Request, Response, Header
@@ -110,6 +111,8 @@ class EventPayload(BaseModel):
 
 def setting(s,key,default):
     row=s.get(Setting,key); return float(row.value) if row else default
+def bool_setting(s,key,default=False):
+    row=s.get(Setting,key); return row.value.lower() in ('1','true','yes','on') if row else default
 def pnl(t,price): return (price-t.entry_price)*t.quantity*(1 if t.direction=='LONG' else -1)
 def close_trade(s,t,price,reason,qty=None,event_id=''):
     if price is None or price<=0: raise ValueError('exit price must be positive')
@@ -162,12 +165,23 @@ def process(s,p,event_id):
                     close_trade(s,t,levels[stage-1],f'TP{stage}',qty=exit_qty,event_id=f'{event_id}-TP{stage}')
                     if t.quantity<=1e-9: break
                     t.stop_loss=t.entry_price if stage==1 else levels[stage-2]
+                    t.executions=list(t.executions or [])+[{'side':'SL_MOVE','quantity':t.quantity,'price':t.stop_loss,'reason':f'After TP{stage}','at':datetime.now(timezone.utc).isoformat()}]
                     s.add(Audit(action='TRAIL_STOP',subject=t.trade_id,details={'after_target':stage,'value':t.stop_loss,'event_id':event_id}))
             else:
                 target=(t.target is not None and ((t.direction=='LONG' and p.price>=t.target) or (t.direction=='SHORT' and p.price<=t.target)))
                 if target: close_trade(s,t,p.price,'TARGET_HIT',event_id=event_id)
         return
     if typ in ('ENTRY_LONG','ENTRY_SHORT'):
+        if bool_setting(s,'script_allowlist_enabled',False) and not s.query(Strategy).filter_by(strategy_id=sid,enabled=True).first():
+            raise ValueError('script is not enabled in the configured allowlist')
+        daily_limit=int(setting(s,'max_trades_per_day',0))
+        if daily_limit:
+            india=ZoneInfo('Asia/Kolkata'); today=datetime.now(india).date()
+            count=0
+            for trade in s.query(Trade).all():
+                entry_time=trade.entry_time.replace(tzinfo=timezone.utc) if trade.entry_time and trade.entry_time.tzinfo is None else trade.entry_time
+                if entry_time and entry_time.astimezone(india).date()==today: count+=1
+            if count>=daily_limit: raise ValueError('daily paper trade limit reached')
         direction='LONG' if typ=='ENTRY_LONG' else 'SHORT'; price=p.entry_price or p.price
         if not price or price<=0: raise ValueError('entry_price or price required')
         tid=p.trade_id or event_id
@@ -206,7 +220,9 @@ def process(s,p,event_id):
         if len(matches)!=1: raise ValueError('unmatched or ambiguous modification; specify trade_id')
         t=matches[0]
         if p.price is None or p.price<=0: raise ValueError('positive price required for modification')
-        if typ=='MODIFY_SL': t.stop_loss=p.price
+        if typ=='MODIFY_SL':
+            t.stop_loss=p.price
+            t.executions=list(t.executions or [])+[{'side':'SL_MOVE','quantity':t.quantity,'price':p.price,'reason':'Stop loss modified','at':datetime.now(timezone.utc).isoformat()}]
         else: t.target=p.price
         s.add(Audit(action=typ,subject=t.trade_id,details={'value':p.price,'event_id':event_id})); return
     raise ValueError('unsupported event')
@@ -281,10 +297,16 @@ def simulate(payload:EventPayload,s:Session=Depends(db),u:User=Depends(current_u
 def trade_json(t,s):
     un=pnl(t,t.current_price) if t.status in ('OPEN','PARTIALLY_CLOSED') else 0
     price_row=s.query(Price).filter_by(symbol=t.symbol).first()
-    return {'trade_id':t.trade_id,'strategy':t.strategy_id,'symbol':t.symbol,'direction':t.direction,'quantity':t.quantity,'entry_price':t.entry_price,'current_price':t.current_price,'stop_loss':t.stop_loss,'target':t.target,'targets':take_profit_levels(t),'target_stage':take_profit_stage(t),'status':t.status,'entry_time':t.entry_time.isoformat(),'exit_time':t.exit_time.isoformat() if t.exit_time else None,'exit_price':t.exit_price,'gross_pnl':t.gross_pnl+un,'realized_pnl':t.gross_pnl,'unrealized_pnl':un,'charges':t.charges,'net_pnl':t.net_pnl+un,'exit_reason':t.exit_reason,'mfe':t.mfe,'mae':t.mae,'price_updated_at':price_row.updated_at.isoformat() if price_row else None}
+    return {'trade_id':t.trade_id,'strategy':t.strategy_id,'symbol':t.symbol,'direction':t.direction,'quantity':t.quantity,'entry_price':t.entry_price,'current_price':t.current_price,'stop_loss':t.stop_loss,'target':t.target,'targets':take_profit_levels(t),'target_stage':take_profit_stage(t),'status':t.status,'entry_time':t.entry_time.isoformat(),'exit_time':t.exit_time.isoformat() if t.exit_time else None,'exit_price':t.exit_price,'gross_pnl':t.gross_pnl+un,'realized_pnl':t.gross_pnl,'unrealized_pnl':un,'charges':t.charges,'net_pnl':t.net_pnl+un,'exit_reason':t.exit_reason,'mfe':t.mfe,'mae':t.mae,'price_updated_at':price_row.updated_at.isoformat() if price_row else None,'executions':t.executions or []}
 @app.get('/api/dashboard')
 def dashboard(s:Session=Depends(db),u:User=Depends(current_user)):
-    trades=s.query(Trade).all(); today=datetime.now(timezone.utc).date(); open_t=[t for t in trades if t.status in ('OPEN','PARTIALLY_CLOSED')]; closed=[t for t in trades if t.exit_time and t.exit_time.date()==today]; realized=sum(t.gross_pnl-t.charges for t in trades); daily=sum(float(ex.get('net',0)) for t in trades for ex in (t.executions or []) if ex.get('side')=='EXIT' and datetime.fromisoformat(ex['at']).date()==today); unreal=sum(pnl(t,t.current_price) for t in open_t)
+    india=ZoneInfo('Asia/Kolkata'); trades=s.query(Trade).all(); today=datetime.now(india).date(); open_t=[t for t in trades if t.status in ('OPEN','PARTIALLY_CLOSED')]; closed=[t for t in trades if t.exit_time and (t.exit_time.replace(tzinfo=timezone.utc) if t.exit_time.tzinfo is None else t.exit_time).astimezone(india).date()==today]; realized=sum(t.gross_pnl-t.charges for t in trades); daily=0
+    for trade in trades:
+        for execution in trade.executions or []:
+            if execution.get('side')=='EXIT' and execution.get('at'):
+                at=datetime.fromisoformat(execution['at']); at=at.replace(tzinfo=timezone.utc) if at.tzinfo is None else at
+                if at.astimezone(india).date()==today: daily+=float(execution.get('net',0))
+    unreal=sum(pnl(t,t.current_price) for t in open_t)
     return {'today_pnl':daily,'total_realized_pnl':realized,'unrealized_pnl':unreal,'open_positions':len(open_t),'total_trades':len(trades),'win_rate':(100*sum(t.net_pnl>0 for t in trades if t.exit_time)/max(1,sum(bool(t.exit_time) for t in trades))),'open_trades':[trade_json(t,s) for t in open_t],'closed_trades':[trade_json(t,s) for t in sorted(trades,key=lambda x:x.entry_time,reverse=True) if t.exit_time][:30],'events':[{'event_id':e.event_id,'event':e.event_type,'symbol':e.symbol,'status':e.status,'duplicate_count':e.duplicate_count,'received_at':e.received_at.isoformat(),'error':e.error} for e in s.query(Event).order_by(Event.received_at.desc()).limit(10)],'prices':[{'symbol':p.symbol,'price':p.price,'updated_at':p.updated_at.isoformat(),'status':'LIVE' if (datetime.now(timezone.utc)-(p.updated_at.replace(tzinfo=timezone.utc) if p.updated_at.tzinfo is None else p.updated_at)).total_seconds()<180 else 'STALE','source':p.source} for p in s.query(Price).all()]}
 @app.get('/api/trades')
 def trades(status:str|None=None,strategy:str|None=None,symbol:str|None=None,s:Session=Depends(db),u:User=Depends(current_user)):
@@ -326,14 +348,17 @@ def report_csv(s:Session=Depends(db),u:User=Depends(current_user)):
     for t in s.query(Trade).all():w.writerow([t.trade_id,t.strategy_id,t.symbol,t.direction,t.quantity,t.entry_price,t.exit_price,t.gross_pnl,t.charges,t.net_pnl,t.status,t.entry_time.isoformat(),t.exit_time.isoformat() if t.exit_time else ''])
     return StreamingResponse(iter([out.getvalue()]),media_type='text/csv',headers={'Content-Disposition':'attachment; filename=paper-trades.csv'})
 @app.get('/api/settings')
-def get_settings(s:Session=Depends(db),u:User=Depends(current_user)): return {'charge_per_unit':setting(s,'charge_per_unit',0),'default_quantity':setting(s,'default_quantity',1),'cookie_secure':os.getenv('COOKIE_SECURE','false').lower()=='true'}
+def get_settings(s:Session=Depends(db),u:User=Depends(current_user)): return {'charge_per_unit':setting(s,'charge_per_unit',0),'default_quantity':setting(s,'default_quantity',1),'total_capital':setting(s,'total_capital',100000),'max_trades_per_day':int(setting(s,'max_trades_per_day',0)),'script_allowlist_enabled':bool_setting(s,'script_allowlist_enabled',False),'cookie_secure':os.getenv('COOKIE_SECURE','false').lower()=='true'}
 @app.put('/api/settings')
 def put_settings(body:dict,s:Session=Depends(db),u:User=Depends(current_user)):
-    for k in ('charge_per_unit','default_quantity'):
+    for k in ('charge_per_unit','default_quantity','total_capital','max_trades_per_day'):
         if k in body:
             v=float(body[k]);
-            if not math.isfinite(v) or (k=='charge_per_unit' and v<0) or (k=='default_quantity' and v<=0): raise HTTPException(422,f'invalid {k}')
+            if not math.isfinite(v) or (k in ('charge_per_unit','max_trades_per_day') and v<0) or (k in ('default_quantity','total_capital') and v<=0) or (k=='max_trades_per_day' and not v.is_integer()): raise HTTPException(422,f'invalid {k}')
             row=s.get(Setting,k) or Setting(key=k,value=str(v)); row.value=str(v); s.add(row)
+    if 'script_allowlist_enabled' in body:
+        if not isinstance(body['script_allowlist_enabled'],bool): raise HTTPException(422,'invalid script_allowlist_enabled')
+        key='script_allowlist_enabled'; row=s.get(Setting,key) or Setting(key=key,value='false'); row.value=str(body[key]).lower(); s.add(row)
     s.add(Audit(action='SETTINGS_UPDATE',subject=u.username,details=body)); s.commit(); return {'ok':True}
 @app.get('/api/stream')
 def stream(u:User=Depends(current_user)):

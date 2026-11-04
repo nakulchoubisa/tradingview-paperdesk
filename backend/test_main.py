@@ -35,6 +35,7 @@ def test_five_targets_take_equal_slices_and_trail_stop():
     assert post({'event':'PRICE_UPDATE','event_id':'five-target-p1','strategy':'monitor','symbol':'NSE:STAGED','price':115}).status_code==200
     trade=next(x for x in client.get('/api/trades').json() if x['trade_id']==tid)
     assert trade['quantity']==8 and trade['stop_loss']==100 and trade['target_stage']==1 and trade['targets']==levels
+    assert any(x['side']=='SL_MOVE' and x['price']==100 for x in trade['executions'])
     assert post({'event':'PRICE_UPDATE','event_id':'five-target-p3','strategy':'monitor','symbol':'NSE:STAGED','price':135}).status_code==200
     trade=next(x for x in client.get('/api/trades').json() if x['trade_id']==tid)
     assert trade['quantity']==4 and trade['stop_loss']==120 and trade['target_stage']==3
@@ -85,6 +86,20 @@ def test_body_secret_redacted_and_persisted():
     with SessionLocal() as s: assert s.query(Trade).filter_by(trade_id='persisted').one().entry_price==10
     logged=next(x for x in client.get('/api/events').json() if x['event_id']=='body-secret-entry')
     assert 'secret' not in logged['payload']
+
+def test_configured_script_allowlist_blocks_unknown_entries():
+    login()
+    csrf={'X-CSRF-Token':client.cookies.get('paper_csrf')}
+    saved=client.put('/api/settings',headers=csrf,json={'total_capital':250000,'max_trades_per_day':0,'script_allowlist_enabled':True})
+    assert saved.status_code==200,saved.text
+    settings=client.get('/api/settings').json()
+    assert settings['total_capital']==250000 and settings['script_allowlist_enabled'] is True
+    denied=post({'event':'ENTRY_LONG','event_id':'blocked-script','trade_id':'blocked-script','strategy':'not-allowed','symbol':'NSE:ALLOW','price':100})
+    assert denied.status_code==422 and 'allowlist' in denied.json()['detail']
+    assert client.post('/api/strategies',headers=csrf,json={'strategy_id':'allowed-script','name':'Allowed script'}).status_code==200
+    accepted=post({'event':'ENTRY_LONG','event_id':'accepted-script','trade_id':'accepted-script','strategy':'allowed-script','symbol':'NSE:ALLOW','price':100})
+    assert accepted.status_code==200,accepted.text
+    assert client.put('/api/settings',headers=csrf,json={'script_allowlist_enabled':False}).status_code==200
 
 def test_legacy_nested_tradingview_payload():
     strategy='ZERO_POINT_AUTOMATION'; symbol='NSE:LEGACY-OPTION'; tid='legacy-paper-trade'

@@ -10,13 +10,16 @@ A self-hostable paper-trading terminal. TradingView alerts feed a FastAPI servic
 - Phase 4 — Simulated trading: long/short, partial exits, SL/target updates, charges, MFE/MAE, price-triggered exits and audited manual close. The supplied ZERO POINT AUTOMATION script has a Paperdesk-compatible adapter in `pine/zero_point_automation_paperdesk.pine`.
 - Phase 5 — UI/live state: overview, open positions, history, analytics, strategies, webhook monitor and settings; SSE refresh with polling fallback.
 - Phase 6 — Analytics: stored-trade summary metrics and CSV export.
-- Phase 7 — Docker Compose/Nginx and automated tests included. Production review, host account configuration, TLS issuance, and hosted end-to-end checks remain deployment tasks.
+- Phase 7 — Configuration and trade audit: paper capital reference, India-calendar-day entry cap, optional exact strategy-ID allowlist, and expandable per-trade execution log including target fills and trailing stop moves.
+- Phase 8 — Docker Compose/Nginx and automated tests included. Production review, host account configuration, TLS issuance, and hosted end-to-end checks remain deployment tasks.
 
 ## Architecture
 
 `TradingView → HTTPS POST → FastAPI validation/idempotency → SQLAlchemy transaction → paper engine → PostgreSQL → React dashboard (SSE refresh)`.
 
-SQLite is the local default. Docker Compose uses PostgreSQL with a persistent volume. Tables are created on startup; a versioned Alembic migration chain is not included yet. Timestamps are stored in UTC; UI uses browser local time (set to Asia/Kolkata for India display).
+SQLite is the local default. Docker Compose uses PostgreSQL with a persistent volume. Tables are created on startup; a versioned Alembic migration chain is not included yet. Timestamps are stored in UTC; greeting, daily trade limits, and UI time displays use Asia/Kolkata.
+
+In **Settings**, paper capital is a reference value only because the application accepts instruments across markets and does not convert their notional exposure to a shared currency. The daily entry cap counts each new entry in Asia/Kolkata time; set it to `0` for no cap. Configure exact alert strategy IDs in **Strategies**, then enable **Enforce configured script allowlist** in Settings. Once enabled, unknown or disabled IDs cannot open new simulated trades; price updates and exit alerts remain accepted. Open positions and Trade history rows include a collapsible trade log with entry, partial exit/TP, and stop movement events.
 
 ## Local development
 
@@ -87,7 +90,7 @@ For always-on compute with persistent storage, Oracle Cloud Infrastructure Alway
 
 Allow inbound 80/443 and restricted SSH, configure DNS if using a domain, install Docker Compose and Certbot, configure the real certificate path in Nginx, and run `docker compose up -d --build`. Back up PostgreSQL off-host regularly. This repository cannot provision cloud resources or a TLS certificate for you.
 
-[Render's free services](https://render.com/docs/free) sleep after 15 minutes idle, have ephemeral app storage, and free Postgres expires after 30 days without backups; that works for demos, but not 24/7 service with durable history. GitHub hosts source code, not the running backend. Push to a private repository and never commit `.env`, database files or webhook secrets.
+[Render's free services](https://render.com/docs/free) sleep after 15 minutes idle, have ephemeral app storage, and free Postgres expires after 30 days without backups; that works for demos, but not 24/7 service with durable history. GitHub hosts source code, not the running backend. Keep the source repository private where practical and never commit `.env`, database files or webhook secrets. If a webhook token, login password, or session secret has appeared in public source, Git history, screenshots, or alert logs, rotate it at the hosting provider and update TradingView alerts; deleting it from the latest commit does not remove historical copies.
 
 ## Security checklist
 
